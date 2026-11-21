@@ -1,12 +1,11 @@
-
 <!DOCTYPE html>
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>VK Watch Party</title>
-    <script src="https://telegram.org"></script>
-    <script src="https://jsdelivr.net"></script>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.20/dist/hls.min.js"></script>
     <style>
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -21,6 +20,7 @@
         .controls { display: flex; gap: 8px; }
         input {
             flex: 1;
+            min-width: 0;
             padding: 10px;
             border-radius: 8px;
             border: 1px solid #444;
@@ -37,7 +37,7 @@
             font-weight: 600;
             cursor: pointer;
         }
-        button:disabled { opacity: 0.5; }
+        button:disabled { opacity: 0.5; cursor: default; }
         video {
             width: 100%;
             max-height: 70vh;
@@ -49,7 +49,7 @@
 </head>
 <body>
     <div class="controls">
-        <input type="text" id="urlInput" placeholder="Вставьте ссылку на видео ВК (://vk.com...)">
+        <input type="text" id="urlInput" placeholder="Вставьте ссылку на видео ВК">
         <button id="loadBtn" onclick="loadVideo()">Загрузить</button>
     </div>
 
@@ -61,14 +61,14 @@
     <div class="status" id="statusText">Подключение к комнате...</div>
 
     <script>
-        const tg = window.Telegram.WebApp;
-        tg.expand();
+        const tg = window.Telegram?.WebApp;
+        tg?.expand?.();
 
         const urlParams = new URLSearchParams(window.location.search);
-        const roomId = tg.initDataUnsafe?.start_param || urlParams.get('room') || 'room_' + Math.floor(Math.random() * 10000);
-        
+        const roomId = tg?.initDataUnsafe?.start_param || urlParams.get('room') || 'room_' + crypto.randomUUID();
+
         if (!urlParams.get('room')) {
-            window.history.replaceState({}, '', `?room=${roomId}`);
+            window.history.replaceState({}, '', `?room=${encodeURIComponent(roomId)}`);
         }
 
         const player = document.getElementById('player');
@@ -77,22 +77,31 @@
         let hls = null;
 
         const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const ws = new WebSocket(`${wsProtocol}//${location.host}/ws/${roomId}`);
+        const ws = new WebSocket(`${wsProtocol}//${location.host}/ws/${encodeURIComponent(roomId)}`);
 
         ws.onopen = () => statusText.innerText = `Комната: ${roomId} (подключено)`;
         ws.onclose = () => statusText.innerText = 'Соединение потеряно. Перезагрузите страницу.';
+        ws.onerror = () => statusText.innerText = 'Не удалось подключиться к комнате.';
 
         function setVideoSource(streamUrl, startTime = 0, autoPlay = false) {
             const proxiedUrl = `/api/proxy?url=${encodeURIComponent(streamUrl)}`;
-            if (hls) { hls.destroy(); hls = null; }
+            if (hls) {
+                hls.destroy();
+                hls = null;
+            }
 
-            if (streamUrl.includes('.m3u8') && Hls.isSupported()) {
+            if (streamUrl.includes('.m3u8') && window.Hls?.isSupported()) {
                 hls = new Hls();
                 hls.loadSource(proxiedUrl);
                 hls.attachMedia(player);
                 hls.on(Hls.Events.MANIFEST_PARSED, () => {
                     player.currentTime = startTime;
                     if (autoPlay) player.play().catch(() => {});
+                });
+                hls.on(Hls.Events.ERROR, (event, data) => {
+                    if (data.fatal) {
+                        statusText.innerText = 'Ошибка воспроизведения HLS-потока.';
+                    }
                 });
             } else {
                 player.src = proxiedUrl;
@@ -104,24 +113,33 @@
         }
 
         ws.onmessage = (event) => {
-            const msg = json.parse(event.data);
+            let msg;
+            try {
+                msg = JSON.parse(event.data);
+            } catch (error) {
+                console.error('Некорректное сообщение WebSocket:', error);
+                return;
+            }
+
             isRemote = true;
 
-            if (msg.type === 'init' && msg.state.stream_url) {
-                document.getElementById('urlInput').value = msg.state.vk_url;
-                setVideoSource(msg.state.stream_url, msg.state.time, msg.state.playing);
+            if (msg.type === 'init' && msg.state?.stream_url) {
+                document.getElementById('urlInput').value = msg.state.vk_url || '';
+                setVideoSource(msg.state.stream_url, msg.state.time || 0, msg.state.playing);
             } else if (msg.type === 'load') {
-                document.getElementById('urlInput').value = msg.vk_url;
-                statusText.innerText = `Загружено: ${msg.title}`;
+                document.getElementById('urlInput').value = msg.vk_url || '';
+                statusText.innerText = `Загружено: ${msg.title || 'Видео'}`;
                 setVideoSource(msg.stream_url, 0, true);
             } else if (msg.type === 'play') {
-                if (Math.abs(player.currentTime - msg.time) > 1.5) player.currentTime = msg.time;
+                if (Math.abs(player.currentTime - msg.time) > 1.5) {
+                    player.currentTime = msg.time;
+                }
                 player.play().catch(() => {});
             } else if (msg.type === 'pause') {
-                player.currentTime = msg.time;
+                player.currentTime = msg.time || 0;
                 player.pause();
             } else if (msg.type === 'seek') {
-                player.currentTime = msg.time;
+                player.currentTime = msg.time || 0;
             }
 
             setTimeout(() => { isRemote = false; }, 300);
@@ -130,44 +148,57 @@
         async function loadVideo() {
             const vkUrl = document.getElementById('urlInput').value.trim();
             if (!vkUrl) return;
+
             const btn = document.getElementById('loadBtn');
             btn.disabled = true;
-            statusText.innerText = 'Извлекаем видео без рекламы...';
+            statusText.innerText = 'Извлекаем видео...';
 
             try {
                 const res = await fetch(`/api/extract?url=${encodeURIComponent(vkUrl)}`);
                 const data = await res.json();
-                if (!res.ok) throw new Error(data.detail || 'Ошибка');
+                if (!res.ok) throw new Error(data.detail || 'Ошибка извлечения');
 
                 statusText.innerText = `Загружено: ${data.title}`;
                 setVideoSource(data.stream_url, 0, true);
 
-                ws.send(JSON.stringify({
-                    type: 'load',
-                    vk_url: vkUrl,
-                    stream_url: data.stream_url,
-                    title: data.title
-                }));
-            } catch (e) {
-                statusText.innerText = 'Ошибка: ' + e.message;
+                if (ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({
+                        type: 'load',
+                        vk_url: vkUrl,
+                        stream_url: data.stream_url,
+                        title: data.title
+                    }));
+                }
+            } catch (error) {
+                statusText.innerText = 'Ошибка: ' + error.message;
             } finally {
                 btn.disabled = false;
             }
         }
 
         player.onplay = () => {
-            if (!isRemote) ws.send(JSON.stringify({ type: 'play', time: player.currentTime }));
+            if (!isRemote && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'play', time: player.currentTime }));
+            }
         };
         player.onpause = () => {
-            if (!isRemote) ws.send(JSON.stringify({ type: 'pause', time: player.currentTime }));
+            if (!isRemote && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'pause', time: player.currentTime }));
+            }
         };
         player.onseeked = () => {
-            if (!isRemote) ws.send(JSON.stringify({ type: 'seek', time: player.currentTime }));
+            if (!isRemote && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'seek', time: player.currentTime }));
+            }
         };
 
-        function copyRoomLink() {
-            navigator.clipboard.writeText(window.location.href);
-            statusText.innerText = 'Ссылка скопирована! Отправьте её друзьям.';
+        async function copyRoomLink() {
+            try {
+                await navigator.clipboard.writeText(window.location.href);
+                statusText.innerText = 'Ссылка скопирована! Отправьте её друзьям.';
+            } catch (error) {
+                statusText.innerText = 'Не удалось скопировать ссылку.';
+            }
         }
     </script>
 </body>

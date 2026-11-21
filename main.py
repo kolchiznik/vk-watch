@@ -1,31 +1,62 @@
 import json
-from typing import Dict
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException
-from fastapi.responses import HTMLResponse, StreamingResponse
-import yt_dlp
+import ipaddress
+import socket
+from urllib.parse import urlparse
+from typing import Dict, Set
+
 import httpx
+import yt_dlp
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse, StreamingResponse
 
 app = FastAPI()
 
 rooms: Dict[str, dict] = {}
 
+
 def get_room(room_id: str):
     if room_id not in rooms:
         rooms[room_id] = {
-            "connections": [],
+            "connections": set(),
             "state": {
                 "vk_url": "",
                 "stream_url": "",
                 "playing": False,
-                "time": 0.0
-            }
+                "time": 0.0,
+            },
         }
     return rooms[room_id]
+
+
+def validate_public_url(url: str) -> None:
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        raise HTTPException(status_code=400, detail="Некорректный URL потока")
+
+    hostname = parsed.hostname
+    try:
+        addresses = {item[4][0] for item in socket.getaddrinfo(hostname, None)}
+    except socket.gaierror:
+        raise HTTPException(status_code=400, detail="Не удалось определить хост потока")
+
+    for address in addresses:
+        ip = ipaddress.ip_address(address)
+        if (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_reserved
+            or ip.is_multicast
+            or ip.is_unspecified
+        ):
+            raise HTTPException(status_code=400, detail="Прокси-ссылка недоступна")
+
 
 @app.get("/", response_class=HTMLResponse)
 async def index():
     with open("index.html", "r", encoding="utf-8") as f:
         return f.read()
+
 
 @app.get("/api/extract")
 async def extract_vk(url: str):
@@ -41,49 +72,83 @@ async def extract_vk(url: str):
             title = info.get("title", "Видео ВК")
             if not stream_url:
                 raise ValueError("Не удалось получить поток")
+            validate_public_url(stream_url)
             return {"stream_url": stream_url, "title": title}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+
 @app.get("/api/proxy")
 async def proxy_video(url: str, request: Request):
+    validate_public_url(url)
+
     headers = {}
-    if "range" in request.headers:
-        headers["Range"] = request.headers["range"]
+    if range_header := request.headers.get("range"):
+        headers["Range"] = range_header
     headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
 
-    client = httpx.AsyncClient(follow_redirects=True, timeout=30.0)
-    req = client.build_request("GET", url, headers=headers)
-    r = await client.send(req, stream=True)
+    client = httpx.AsyncClient(follow_redirects=False, timeout=30.0)
+    try:
+        response = await client.send(
+            client.build_request("GET", url, headers=headers),
+            stream=True,
+        )
 
-    resp_headers = {
-        "Content-Type": r.headers.get("Content-Type", "video/mp4"),
-        "Accept-Ranges": "bytes",
-    }
-    if "Content-Length" in r.headers:
-        resp_headers["Content-Length"] = r.headers["Content-Length"]
-    if "Content-Range" in r.headers:
-        resp_headers["Content-Range"] = r.headers["Content-Range"]
+        if response.is_redirect:
+            location = response.headers.get("location")
+            await response.aclose()
+            if not location:
+                await client.aclose()
+                raise HTTPException(status_code=502, detail="Поток перенаправляет без адреса")
+            redirect_url = str(response.next_request.url) if response.next_request else location
+            validate_public_url(redirect_url)
+            response = await client.send(
+                client.build_request("GET", redirect_url, headers=headers),
+                stream=True,
+            )
 
-    async def iter_file():
-        try:
-            async for chunk in r.aiter_bytes(chunk_size=1024 * 512):
-                yield chunk
-        finally:
-            await r.aclose()
+        if response.status_code >= 400:
+            await response.aclose()
             await client.aclose()
+            raise HTTPException(status_code=response.status_code, detail="Не удалось получить поток")
 
-    return StreamingResponse(
-        iter_file(),
-        status_code=r.status_code,
-        headers=resp_headers
-    )
+        response_headers = {
+            "Content-Type": response.headers.get("Content-Type", "video/mp4"),
+            "Accept-Ranges": "bytes",
+        }
+        if content_length := response.headers.get("Content-Length"):
+            response_headers["Content-Length"] = content_length
+        if content_range := response.headers.get("Content-Range"):
+            response_headers["Content-Range"] = content_range
+
+        async def iter_file():
+            try:
+                async for chunk in response.aiter_bytes(chunk_size=1024 * 512):
+                    yield chunk
+            finally:
+                await response.aclose()
+                await client.aclose()
+
+        return StreamingResponse(
+            iter_file(),
+            status_code=response.status_code,
+            headers=response_headers,
+        )
+    except HTTPException:
+        await client.aclose()
+        raise
+    except httpx.HTTPError:
+        await client.aclose()
+        raise HTTPException(status_code=502, detail="Ошибка подключения к потоку")
+
 
 @app.websocket("/ws/{room_id}")
 async def websocket_endpoint(websocket: WebSocket, room_id: str):
     await websocket.accept()
     room = get_room(room_id)
-    room["connections"].append(websocket)
+    room["connections"].add(websocket)
 
     await websocket.send_text(json.dumps({"type": "init", "state": room["state"]}))
 
@@ -92,17 +157,34 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str):
             data = await websocket.receive_text()
             msg = json.loads(data)
 
-            if msg["type"] == "load":
-                room["state"]["vk_url"] = msg["vk_url"]
-                room["state"]["stream_url"] = msg["stream_url"]
+            if msg.get("type") == "load":
+                room["state"]["vk_url"] = msg.get("vk_url", "")
+                room["state"]["stream_url"] = msg.get("stream_url", "")
                 room["state"]["time"] = 0.0
                 room["state"]["playing"] = True
-            elif msg["type"] in ["play", "pause", "seek"]:
-                room["state"]["playing"] = (msg["type"] == "play")
+            elif msg.get("type") in ("play", "pause", "seek"):
+                room["state"]["playing"] = msg["type"] == "play"
                 room["state"]["time"] = msg.get("time", room["state"]["time"])
 
+            disconnected = []
             for conn in room["connections"]:
-                if conn != websocket:
+                if conn == websocket:
+                    continue
+                try:
                     await conn.send_text(data)
+                except Exception:
+                    disconnected.append(conn)
+
+            for conn in disconnected:
+                room["connections"].discard(conn)
+
+            if not room["connections"]:
+                rooms.pop(room_id, None)
     except WebSocketDisconnect:
-        room["connections"].remove(websocket)
+        pass
+    except json.JSONDecodeError:
+        pass
+    finally:
+        room["connections"].discard(websocket)
+        if not room["connections"]:
+            rooms.pop(room_id, None)
