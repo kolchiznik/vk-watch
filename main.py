@@ -1,15 +1,31 @@
 import ipaddress
 import json
 import socket
+from contextlib import asynccontextmanager
 from typing import Dict
-from urllib.parse import quote, urlencode, urljoin, urlparse
+from urllib.parse import urlencode, urljoin, urlparse
 
 import httpx
 import yt_dlp
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, Response, StreamingResponse
 
-app = FastAPI()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Reuse the connection pool so HLS segment requests don't repeat TLS handshakes.
+    app.state.http_client = httpx.AsyncClient(
+        follow_redirects=False,
+        timeout=httpx.Timeout(30.0, connect=10.0),
+        limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
+    )
+    try:
+        yield
+    finally:
+        await app.state.http_client.aclose()
+
+
+app = FastAPI(lifespan=lifespan)
 rooms: Dict[str, dict] = {}
 
 
@@ -30,7 +46,7 @@ def get_room(room_id: str):
 
 
 def validate_public_url(url: str) -> None:
-    """Allow public CDN hosts while rejecting loopback/private/link-local destinations."""
+    """Reject non-public IP destinations while allowing public VK/CDN hosts."""
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https") or not parsed.hostname:
         raise HTTPException(status_code=400, detail="Некорректный URL потока")
@@ -39,22 +55,16 @@ def validate_public_url(url: str) -> None:
         addresses = {entry[4][0] for entry in socket.getaddrinfo(parsed.hostname, None)}
     except (socket.gaierror, ValueError):
         raise HTTPException(status_code=400, detail="Не удалось определить хост потока")
-
     if not addresses:
         raise HTTPException(status_code=400, detail="Не удалось определить хост потока")
 
     for address in addresses:
-        ip = ipaddress.ip_address(address)
-        if not ip.is_global:
+        if not ipaddress.ip_address(address).is_global:
             raise HTTPException(status_code=400, detail="Прокси-ссылка недоступна")
 
 
 def proxy_url(url: str, user_agent: str, referer: str) -> str:
-    return "/api/proxy?" + urlencode({
-        "url": url,
-        "user_agent": user_agent,
-        "referer": referer,
-    })
+    return "/api/proxy?" + urlencode({"url": url, "user_agent": user_agent, "referer": referer})
 
 
 def rewrite_m3u8_playlist(text: str, playlist_url: str, user_agent: str, referer: str) -> str:
@@ -66,32 +76,23 @@ def rewrite_m3u8_playlist(text: str, playlist_url: str, user_agent: str, referer
         if not stripped:
             rewritten_lines.append(line)
             continue
-
         if stripped.startswith("#"):
-            # HLS URI attributes can contain keys, alternate audio/subtitles, and I-frame playlists.
             def replace_uri(match):
-                original_uri = match.group(2)
-                if original_uri.lower().startswith("data:"):
+                source_uri = match.group(1)
+                if source_uri.lower().startswith("data:"):
                     return match.group(0)
-                absolute_uri = urljoin(playlist_url, original_uri)
+                absolute_uri = urljoin(playlist_url, source_uri)
                 return f'URI="{proxy_url(absolute_uri, user_agent, referer)}"'
 
-            rewritten_lines.append(
-                re.sub(r'URI="([^"]+)"', replace_uri, stripped, flags=re.IGNORECASE)
-            )
-            continue
-
-        absolute_uri = urljoin(playlist_url, stripped)
-        rewritten_lines.append(proxy_url(absolute_uri, user_agent, referer))
+            rewritten_lines.append(re.sub(r'URI="([^"]+)"', replace_uri, stripped, flags=re.IGNORECASE))
+        else:
+            rewritten_lines.append(proxy_url(urljoin(playlist_url, stripped), user_agent, referer))
 
     return "\n".join(rewritten_lines) + ("\n" if text.endswith("\n") else "")
 
 
 def stream_request_headers(user_agent: str, referer: str, request: Request) -> dict:
-    headers = {
-        "User-Agent": user_agent[:512],
-        "Referer": referer[:2048],
-    }
+    headers = {"User-Agent": user_agent[:512], "Referer": referer[:2048]}
     if range_header := request.headers.get("range"):
         headers["Range"] = range_header
     return headers
@@ -106,7 +107,7 @@ async def index():
 @app.get("/api/extract")
 async def extract_vk(url: str):
     ydl_opts = {
-        "format": "best[ext=mp4]/best",
+        "format": "best[height<=720][ext=mp4]/best[height<=720]/best",
         "quiet": True,
         "no_warnings": True,
     }
@@ -121,12 +122,11 @@ async def extract_vk(url: str):
         ext = str(info.get("ext", "")).lower()
         protocol = str(info.get("protocol", "")).lower()
         is_hls = ext == "m3u8" or "m3u8" in protocol or ".m3u8" in stream_url.lower()
-
-        # Keep only the headers needed to access the media CDN; never expose cookies/tokens.
         extracted_headers = info.get("http_headers") or {}
-        user_agent = extracted_headers.get("User-Agent") or "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-        referer = extracted_headers.get("Referer") or "https://vkvideo.ru/"
-        proxy_headers = {"User-Agent": user_agent, "Referer": referer}
+        proxy_headers = {
+            "User-Agent": extracted_headers.get("User-Agent") or "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+            "Referer": extracted_headers.get("Referer") or "https://vkvideo.ru/",
+        }
 
         validate_public_url(stream_url)
         return {
@@ -152,22 +152,21 @@ async def proxy_video(
 ):
     validate_public_url(url)
     headers = stream_request_headers(user_agent, referer, request)
-    client = httpx.AsyncClient(follow_redirects=False, timeout=30.0)
+    client: httpx.AsyncClient = request.app.state.http_client
 
     try:
-        upstream_request = client.build_request("GET", url, headers=headers)
-        response = await client.send(upstream_request, stream=True)
+        response = await client.send(client.build_request("GET", url, headers=headers), stream=True)
 
-        # Follow a small number of redirects manually so every destination is SSRF-checked.
+        # Manually follow redirects, validating every destination against SSRF.
         for _ in range(5):
             if not response.is_redirect:
                 break
             location = response.headers.get("location")
-            redirect_base = str(response.request.url)
+            base_url = str(response.request.url)
             await response.aclose()
             if not location:
                 raise HTTPException(status_code=502, detail="Поток перенаправляет без адреса")
-            url = urljoin(redirect_base, location)
+            url = urljoin(base_url, location)
             validate_public_url(url)
             response = await client.send(client.build_request("GET", url, headers=headers), stream=True)
         else:
@@ -184,21 +183,14 @@ async def proxy_video(
 
         upstream_status = response.status_code
         content_type = response.headers.get("Content-Type", "application/octet-stream")
-        is_m3u8 = (
-            ".m3u8" in url.lower()
-            or "mpegurl" in content_type.lower()
-            or "application/vnd.apple" in content_type.lower()
-        )
+        is_m3u8 = ".m3u8" in url.lower() or "mpegurl" in content_type.lower() or "application/vnd.apple" in content_type.lower()
 
         if is_m3u8:
             body = await response.aread()
             await response.aclose()
-            rewritten = rewrite_m3u8_playlist(
-                body.decode("utf-8", errors="replace"), url, user_agent, referer
-            )
-            await client.aclose()
+            playlist = rewrite_m3u8_playlist(body.decode("utf-8", errors="replace"), url, user_agent, referer)
             return Response(
-                content=rewritten,
+                content=playlist,
                 status_code=upstream_status,
                 media_type="application/vnd.apple.mpegurl",
                 headers={
@@ -225,14 +217,11 @@ async def proxy_video(
                     yield chunk
             finally:
                 await response.aclose()
-                await client.aclose()
 
         return StreamingResponse(stream_body(), status_code=upstream_status, headers=response_headers)
     except HTTPException:
-        await client.aclose()
         raise
     except httpx.HTTPError:
-        await client.aclose()
         raise HTTPException(status_code=502, detail="Ошибка подключения к потоку")
 
 
@@ -247,7 +236,6 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str):
         while True:
             data = await websocket.receive_text()
             msg = json.loads(data)
-
             if msg.get("type") == "load":
                 room["state"].update({
                     "vk_url": msg.get("vk_url", ""),

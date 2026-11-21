@@ -142,7 +142,7 @@
             probeProxy(currentProxyUrl);
 
             if (useHls) {
-                hls = new Hls();
+                hls = new Hls({ maxBufferLength: 60, maxMaxBufferLength: 120 });
                 hls.loadSource(currentProxyUrl);
                 hls.attachMedia(player);
                 hls.on(Hls.Events.MANIFEST_PARSED, () => {
