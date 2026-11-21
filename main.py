@@ -1,6 +1,7 @@
 import ipaddress
 import json
 import socket
+import time
 from contextlib import asynccontextmanager
 from typing import Dict
 from urllib.parse import urlencode, urljoin, urlparse
@@ -13,7 +14,6 @@ from fastapi.responses import HTMLResponse, Response, StreamingResponse
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Reuse the connection pool so HLS segment requests don't repeat TLS handshakes.
     app.state.http_client = httpx.AsyncClient(
         follow_redirects=False,
         timeout=httpx.Timeout(30.0, connect=10.0),
@@ -40,13 +40,29 @@ def get_room(room_id: str):
                 "http_headers": {},
                 "playing": False,
                 "time": 0.0,
+                "updated_at": time.time(),
             },
         }
     return rooms[room_id]
 
 
+def get_current_room_state(room: dict) -> dict:
+    state = room["state"]
+    current_time = state["time"]
+    if state["playing"]:
+        current_time += max(0.0, time.time() - state["updated_at"])
+    return {
+        "stream_url": state["stream_url"],
+        "vk_url": state["vk_url"],
+        "is_hls": state["is_hls"],
+        "http_headers": state["http_headers"],
+        "playing": state["playing"],
+        "time": current_time,
+        "updated_at": state["updated_at"],
+    }
+
+
 def validate_public_url(url: str) -> None:
-    """Reject non-public IP destinations while allowing public VK/CDN hosts."""
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https") or not parsed.hostname:
         raise HTTPException(status_code=400, detail="Некорректный URL потока")
@@ -157,7 +173,6 @@ async def proxy_video(
     try:
         response = await client.send(client.build_request("GET", url, headers=headers), stream=True)
 
-        # Manually follow redirects, validating every destination against SSRF.
         for _ in range(5):
             if not response.is_redirect:
                 break
@@ -230,13 +245,35 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str):
     await websocket.accept()
     room = get_room(room_id)
     room["connections"].add(websocket)
-    await websocket.send_text(json.dumps({"type": "init", "state": room["state"]}))
+
+    server_time = time.time()
+    init_state = get_current_room_state(room)
+    await websocket.send_text(json.dumps({
+        "type": "init",
+        "state": init_state,
+        "server_time": server_time,
+    }))
 
     try:
         while True:
             data = await websocket.receive_text()
             msg = json.loads(data)
-            if msg.get("type") == "load":
+            msg_type = msg.get("type")
+
+            if msg_type == "sync_request":
+                server_time = time.time()
+                sync_state = get_current_room_state(room)
+                await websocket.send_text(json.dumps({
+                    "type": "sync",
+                    "state": sync_state,
+                    "server_time": server_time,
+                    "playing": sync_state["playing"],
+                    "time": sync_state["time"],
+                }))
+                continue
+
+            if msg_type == "load":
+                now = time.time()
                 room["state"].update({
                     "vk_url": msg.get("vk_url", ""),
                     "stream_url": msg.get("stream_url", ""),
@@ -244,10 +281,18 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str):
                     "http_headers": msg.get("http_headers") or {},
                     "time": 0.0,
                     "playing": True,
+                    "updated_at": now,
                 })
-            elif msg.get("type") in ("play", "pause", "seek"):
-                room["state"]["playing"] = msg["type"] == "play"
-                room["state"]["time"] = msg.get("time", room["state"]["time"])
+            elif msg_type in ("play", "pause", "seek"):
+                now = time.time()
+                state_time = msg.get("time", room["state"]["time"])
+                try:
+                    state_time = max(0.0, float(state_time))
+                except (TypeError, ValueError):
+                    state_time = room["state"]["time"]
+                room["state"]["time"] = state_time
+                room["state"]["playing"] = msg_type == "play"
+                room["state"]["updated_at"] = now
 
             disconnected = []
             for connection in room["connections"]:

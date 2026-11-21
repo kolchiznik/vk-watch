@@ -18,40 +18,27 @@
             gap: 12px;
         }
         .controls { display: flex; gap: 8px; }
-        input {
-            flex: 1;
-            min-width: 0;
-            padding: 10px;
-            border-radius: 8px;
-            border: 1px solid #444;
-            background: #252525;
-            color: #fff;
-            font-size: 14px;
-        }
-        button {
-            padding: 10px 14px;
-            border-radius: 8px;
-            border: none;
-            background: var(--tg-theme-button-color, #2ea6ff);
-            color: var(--tg-theme-button-text-color, #ffffff);
-            font-weight: 600;
-            cursor: pointer;
-        }
+        input { flex: 1; min-width: 0; padding: 10px; border-radius: 8px; border: 1px solid #444; background: #252525; color: #fff; font-size: 14px; }
+        button { padding: 10px 14px; border-radius: 8px; border: none; background: var(--tg-theme-button-color, #2ea6ff); color: var(--tg-theme-button-text-color, #ffffff); font-weight: 600; cursor: pointer; }
         button:disabled { opacity: 0.5; cursor: default; }
         video { width: 100%; max-height: 70vh; background: #000; border-radius: 10px; }
         .status { font-size: 13px; color: #aaa; }
-        #debugLog {
-            max-height: 240px;
-            overflow: auto;
-            padding: 10px;
-            background: #101010;
-            color: #c9e6ff;
-            border: 1px solid #444;
-            border-radius: 8px;
-            white-space: pre-wrap;
-            overflow-wrap: anywhere;
-            font-size: 12px;
+        #videoShell { position: relative; }
+        #enableSoundButton {
+            display: none;
+            position: absolute;
+            left: 50%;
+            bottom: 18px;
+            transform: translateX(-50%);
+            z-index: 20;
+            width: max-content;
+            max-width: calc(100% - 32px);
+            background: rgba(25, 25, 25, 0.92);
+            color: #fff;
+            border: 1px solid rgba(255,255,255,.35);
+            box-shadow: 0 4px 16px rgba(0,0,0,.35);
         }
+        #debugLog { max-height: 240px; overflow: auto; padding: 10px; background: #101010; color: #c9e6ff; border: 1px solid #444; border-radius: 8px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
     </style>
 </head>
 <body>
@@ -60,7 +47,10 @@
         <button id="loadBtn" onclick="loadVideo()">Загрузить</button>
     </div>
 
-    <video id="player" controls playsinline></video>
+    <div id="videoShell">
+        <video id="player" controls playsinline></video>
+        <button id="enableSoundButton" type="button">🔊 Включить звук (нажмите для синхронизации)</button>
+    </div>
 
     <div class="controls">
         <button onclick="copyRoomLink()" style="flex: 1; background: #333;">🔗 Скопировать ссылку на комнату</button>
@@ -81,7 +71,9 @@
         const player = document.getElementById('player');
         const statusText = document.getElementById('statusText');
         const debugLog = document.getElementById('debugLog');
+        const enableSoundButton = document.getElementById('enableSoundButton');
         let isRemote = false;
+        let isSeeking = false;
         let hls = null;
         let currentProxyUrl = '';
 
@@ -101,14 +93,9 @@
         }
 
         async function probeProxy(proxyUrl) {
-            const controller = new AbortController();
             try {
-                const response = await fetch(proxyUrl, {
-                    headers: { Range: 'bytes=0-0' },
-                    signal: controller.signal,
-                    cache: 'no-store'
-                });
-                logDebug('Ответ /api/proxy (диагностический Range-запрос)', {
+                const response = await fetch(proxyUrl, { headers: { Range: 'bytes=0-0' }, cache: 'no-store' });
+                logDebug('Ответ /api/proxy', {
                     status: response.status,
                     content_type: response.headers.get('Content-Type'),
                     upstream_status: response.headers.get('X-Proxy-Upstream-Status'),
@@ -116,11 +103,57 @@
                 });
                 await response.body?.cancel();
             } catch (error) {
-                if (error.name !== 'AbortError') logDebug('Ошибка диагностического запроса /api/proxy', error.message);
-            } finally {
-                controller.abort();
+                logDebug('Ошибка диагностического запроса /api/proxy', error.message);
             }
         }
+
+        function requestSync() {
+            if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'sync_request' }));
+            }
+        }
+
+        function synchronizeWithRoom(actualTime, playing, serverTime) {
+            if (!Number.isFinite(actualTime) || isSeeking) return;
+
+            // Add only the network-independent elapsed time already represented by the server sync payload.
+            const divergence = player.currentTime - actualTime;
+            if (Math.abs(divergence) > 1.5) {
+                isRemote = true;
+                player.currentTime = Math.max(0, actualTime);
+                setTimeout(() => { isRemote = false; }, 300);
+            }
+
+            if (playing) {
+                player.play().catch(error => {
+                    if (error.name === 'NotAllowedError') {
+                        player.muted = true;
+                        player.play().catch(() => {});
+                        enableSoundButton.style.display = 'block';
+                    }
+                });
+            } else {
+                player.pause();
+            }
+            logDebug('Сверка таймкода с сервером', {
+                actualTime,
+                localTime: player.currentTime,
+                playing,
+                serverTime
+            });
+        }
+
+        enableSoundButton.addEventListener('click', async () => {
+            player.muted = false;
+            enableSoundButton.style.display = 'none';
+            try {
+                await player.play();
+            } catch (error) {
+                enableSoundButton.style.display = 'block';
+                logDebug('Не удалось включить звук', error.message);
+            }
+            requestSync();
+        });
 
         const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
         const ws = new WebSocket(`${wsProtocol}//${location.host}/ws/${encodeURIComponent(roomId)}`);
@@ -128,44 +161,49 @@
         ws.onclose = () => statusText.innerText = 'Соединение потеряно. Перезагрузите страницу.';
         ws.onerror = () => statusText.innerText = 'Не удалось подключиться к комнате.';
 
-        function setVideoSource(streamUrl, startTime = 0, autoPlay = false, isHls = false, headers = {}) {
+        function setVideoSource(streamUrl, startTime = 0, autoPlay = false, isHls = false, headers = {}, onReady = null) {
             currentProxyUrl = makeProxyUrl(streamUrl, headers);
             if (hls) { hls.destroy(); hls = null; }
             player.removeAttribute('src');
             player.load();
 
-            const useHls = Boolean(isHls || streamUrl.toLowerCase().includes('.m3u8'))
-                && Boolean(window.Hls?.isSupported());
-            logDebug(`Выбран плеер: ${useHls ? 'Hls.js' : 'нативный <video>'}`, {
-                is_hls: Boolean(isHls), stream_url: streamUrl, proxy_url: currentProxyUrl
-            });
+            const useHls = Boolean(isHls || streamUrl.toLowerCase().includes('.m3u8')) && Boolean(window.Hls?.isSupported());
+            logDebug(`Выбран плеер: ${useHls ? 'Hls.js' : 'нативный <video>'}`, { is_hls: Boolean(isHls), stream_url: streamUrl, proxy_url: currentProxyUrl });
             probeProxy(currentProxyUrl);
+
+            function startAtServerTime() {
+                isRemote = true;
+                player.currentTime = Math.max(0, startTime);
+                setTimeout(() => { isRemote = false; }, 300);
+                if (autoPlay) {
+                    player.play().catch(error => {
+                        if (error.name === 'NotAllowedError') {
+                            player.muted = true;
+                            player.play().catch(() => {});
+                            enableSoundButton.style.display = 'block';
+                        }
+                    });
+                }
+                if (onReady) onReady();
+            }
 
             if (useHls) {
                 hls = new Hls({ maxBufferLength: 60, maxMaxBufferLength: 120 });
                 hls.loadSource(currentProxyUrl);
                 hls.attachMedia(player);
-                hls.on(Hls.Events.MANIFEST_PARSED, () => {
-                    player.currentTime = startTime;
-                    if (autoPlay) player.play().catch(error => logDebug('Автовоспроизведение отклонено', error.message));
-                });
+                hls.on(Hls.Events.MANIFEST_PARSED, startAtServerTime);
                 hls.on(Hls.Events.ERROR, (event, data) => {
                     logDebug('Ошибка Hls.js', {
-                        type: data.type, details: data.details, fatal: data.fatal,
-                        response: data.response ? {
-                            code: data.response.code,
-                            text: data.response.text,
-                            url: data.response.url
-                        } : null
+                        type: data.type,
+                        details: data.details,
+                        fatal: data.fatal,
+                        response: data.response ? { code: data.response.code, text: data.response.text, url: data.response.url } : null
                     });
                     if (data.fatal) statusText.innerText = 'Ошибка воспроизведения HLS-потока.';
                 });
             } else {
                 player.src = currentProxyUrl;
-                player.onloadedmetadata = () => {
-                    player.currentTime = startTime;
-                    if (autoPlay) player.play().catch(error => logDebug('Автовоспроизведение отклонено', error.message));
-                };
+                player.onloadedmetadata = startAtServerTime;
             }
         }
 
@@ -180,29 +218,52 @@
             } : { message: 'Неизвестная ошибка media element' });
         });
 
+        player.addEventListener('seeking', () => { isSeeking = true; });
+        player.addEventListener('seeked', () => { setTimeout(() => { isSeeking = false; }, 150); });
+        player.addEventListener('waiting', () => requestSync());
+
         ws.onmessage = event => {
             let msg;
             try { msg = JSON.parse(event.data); }
             catch (error) { logDebug('Некорректное сообщение WebSocket', error.message); return; }
-            isRemote = true;
-            if (msg.type === 'init' && msg.state?.stream_url) {
+
+            if (msg.type === 'init') {
                 const state = msg.state;
-                document.getElementById('urlInput').value = state.vk_url || '';
-                setVideoSource(state.stream_url, state.time || 0, state.playing, state.is_hls, state.http_headers || {});
-            } else if (msg.type === 'load') {
-                document.getElementById('urlInput').value = msg.vk_url || '';
-                statusText.innerText = `Загружено: ${msg.title || 'Видео'}`;
-                setVideoSource(msg.stream_url, 0, true, msg.is_hls, msg.http_headers || {});
-            } else if (msg.type === 'play') {
-                if (Math.abs(player.currentTime - msg.time) > 1.5) player.currentTime = msg.time;
-                player.play().catch(() => {});
-            } else if (msg.type === 'pause') {
-                player.currentTime = msg.time || 0;
-                player.pause();
-            } else if (msg.type === 'seek') {
-                player.currentTime = msg.time || 0;
+                if (state?.stream_url) {
+                    document.getElementById('urlInput').value = state.vk_url || '';
+                    const serverTime = Number(msg.server_time);
+                    const stateTime = Number(state.time);
+                    const elapsedForInit = Number.isFinite(serverTime) ? Math.max(0, Date.now() / 1000 - serverTime) : 0;
+                    const actualTime = state.playing ? stateTime + elapsedForInit : stateTime;
+                    setVideoSource(state.stream_url, actualTime, state.playing, state.is_hls, state.http_headers || {}, () => {
+                        synchronizeWithRoom(actualTime, state.playing, serverTime);
+                    });
+                }
+            } else if (msg.type === 'sync') {
+                const state = msg.state || msg;
+                const serverTime = Number(msg.server_time);
+                let actualTime = Number(state.time ?? msg.time);
+                if (state.playing && Number.isFinite(serverTime)) {
+                    actualTime += Math.max(0, Date.now() / 1000 - serverTime);
+                }
+                synchronizeWithRoom(actualTime, Boolean(state.playing), serverTime);
+            } else {
+                isRemote = true;
+                if (msg.type === 'load') {
+                    document.getElementById('urlInput').value = msg.vk_url || '';
+                    statusText.innerText = `Загружено: ${msg.title || 'Видео'}`;
+                    setVideoSource(msg.stream_url, 0, true, msg.is_hls, msg.http_headers || {});
+                } else if (msg.type === 'play') {
+                    if (Math.abs(player.currentTime - msg.time) > 1.5) player.currentTime = msg.time;
+                    player.play().catch(() => {});
+                } else if (msg.type === 'pause') {
+                    player.currentTime = msg.time || 0;
+                    player.pause();
+                } else if (msg.type === 'seek') {
+                    player.currentTime = msg.time || 0;
+                }
+                setTimeout(() => { isRemote = false; }, 300);
             }
-            setTimeout(() => { isRemote = false; }, 300);
         };
 
         async function loadVideo() {
@@ -240,8 +301,14 @@
             if (!isRemote && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'pause', time: player.currentTime }));
         };
         player.onseeked = () => {
-            if (!isRemote && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'seek', time: player.currentTime }));
+            if (!isSeeking && !isRemote && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'seek', time: player.currentTime }));
         };
+
+        setInterval(() => {
+            if (!isSeeking && !player.paused && ws.readyState === WebSocket.OPEN) {
+                requestSync();
+            }
+        }, 5000);
 
         async function copyRoomLink() {
             try {
