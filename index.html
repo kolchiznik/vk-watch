@@ -62,11 +62,15 @@
     </details>
 
     <script>
+        // Establish WebSocket before loading or initializing media so INIT is received immediately.
+        const urlParams = new URLSearchParams(window.location.search);
         const tg = window.Telegram?.WebApp;
         tg?.expand?.();
-        const urlParams = new URLSearchParams(window.location.search);
         const roomId = tg?.initDataUnsafe?.start_param || urlParams.get('room') || 'room_' + crypto.randomUUID();
         if (!urlParams.get('room')) window.history.replaceState({}, '', `?room=${encodeURIComponent(roomId)}`);
+
+        const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const ws = new WebSocket(`${wsProtocol}//${location.host}/ws/${encodeURIComponent(roomId)}`);
 
         const player = document.getElementById('player');
         const statusText = document.getElementById('statusText');
@@ -108,22 +112,10 @@
         }
 
         function requestSync() {
-            if (ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({ type: 'sync_request' }));
-            }
+            if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'sync_request' }));
         }
 
-        function synchronizeWithRoom(actualTime, playing, serverTime) {
-            if (!Number.isFinite(actualTime) || isSeeking) return;
-
-            // Add only the network-independent elapsed time already represented by the server sync payload.
-            const divergence = player.currentTime - actualTime;
-            if (Math.abs(divergence) > 1.5) {
-                isRemote = true;
-                player.currentTime = Math.max(0, actualTime);
-                setTimeout(() => { isRemote = false; }, 300);
-            }
-
+        function tryPlayRoomMedia(targetTime, playing) {
             if (playing) {
                 player.play().catch(error => {
                     if (error.name === 'NotAllowedError') {
@@ -135,11 +127,18 @@
             } else {
                 player.pause();
             }
+        }
+
+        function synchronizeWithRoom(actualTime, playing, serverTime) {
+            if (!Number.isFinite(actualTime) || isSeeking) return;
+            if (Math.abs(player.currentTime - actualTime) > 1.5) {
+                isRemote = true;
+                player.currentTime = Math.max(0, actualTime);
+                setTimeout(() => { isRemote = false; }, 300);
+            }
+            tryPlayRoomMedia(actualTime, playing);
             logDebug('Сверка таймкода с сервером', {
-                actualTime,
-                localTime: player.currentTime,
-                playing,
-                serverTime
+                actualTime, localTime: player.currentTime, playing, serverTime
             });
         }
 
@@ -155,43 +154,58 @@
             requestSync();
         });
 
-        const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const ws = new WebSocket(`${wsProtocol}//${location.host}/ws/${encodeURIComponent(roomId)}`);
         ws.onopen = () => statusText.innerText = `Комната: ${roomId} (подключено)`;
         ws.onclose = () => statusText.innerText = 'Соединение потеряно. Перезагрузите страницу.';
         ws.onerror = () => statusText.innerText = 'Не удалось подключиться к комнате.';
 
         function setVideoSource(streamUrl, startTime = 0, autoPlay = false, isHls = false, headers = {}, onReady = null) {
+            const targetTime = Math.max(0, Number(startTime) || 0);
             currentProxyUrl = makeProxyUrl(streamUrl, headers);
             if (hls) { hls.destroy(); hls = null; }
             player.removeAttribute('src');
             player.load();
 
             const useHls = Boolean(isHls || streamUrl.toLowerCase().includes('.m3u8')) && Boolean(window.Hls?.isSupported());
-            logDebug(`Выбран плеер: ${useHls ? 'Hls.js' : 'нативный <video>'}`, { is_hls: Boolean(isHls), stream_url: streamUrl, proxy_url: currentProxyUrl });
+            logDebug(`Выбран плеер: ${useHls ? 'Hls.js' : 'нативный <video>'}`, {
+                is_hls: Boolean(isHls), targetTime, stream_url: streamUrl, proxy_url: currentProxyUrl
+            });
             probeProxy(currentProxyUrl);
 
             function startAtServerTime() {
-                isRemote = true;
-                player.currentTime = Math.max(0, startTime);
-                setTimeout(() => { isRemote = false; }, 300);
-                if (autoPlay) {
-                    player.play().catch(error => {
-                        if (error.name === 'NotAllowedError') {
-                            player.muted = true;
-                            player.play().catch(() => {});
-                            enableSoundButton.style.display = 'block';
-                        }
-                    });
-                }
+                tryPlayRoomMedia(targetTime, autoPlay);
                 if (onReady) onReady();
             }
 
             if (useHls) {
-                hls = new Hls({ maxBufferLength: 60, maxMaxBufferLength: 120 });
+                hls = new Hls({
+                    startPosition: targetTime,
+                    maxBufferLength: 60,
+                    maxMaxBufferLength: 120
+                });
                 hls.loadSource(currentProxyUrl);
                 hls.attachMedia(player);
-                hls.on(Hls.Events.MANIFEST_PARSED, startAtServerTime);
+
+                hls.on(Hls.Events.MANIFEST_PARSED, () => {
+                    // Start immediately at the target position; first FRAG_LOADED performs exact correction.
+                    try {
+                        isRemote = true;
+                        player.currentTime = targetTime;
+                    } finally {
+                        setTimeout(() => { isRemote = false; }, 300);
+                    }
+                    tryPlayRoomMedia(targetTime, autoPlay);
+                });
+
+                let firstFragmentCorrected = false;
+                hls.on(Hls.Events.FRAG_LOADED, () => {
+                    if (firstFragmentCorrected) return;
+                    firstFragmentCorrected = true;
+                    if (!onReady) return;
+
+                    // Recalculate from server state now that manifest and first fragment have loaded.
+                    onReady();
+                });
+
                 hls.on(Hls.Events.ERROR, (event, data) => {
                     logDebug('Ошибка Hls.js', {
                         type: data.type,
@@ -305,9 +319,7 @@
         };
 
         setInterval(() => {
-            if (!isSeeking && !player.paused && ws.readyState === WebSocket.OPEN) {
-                requestSync();
-            }
+            if (!isSeeking && !player.paused && ws.readyState === WebSocket.OPEN) requestSync();
         }, 5000);
 
         async function copyRoomLink() {
