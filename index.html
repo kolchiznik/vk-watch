@@ -44,13 +44,14 @@
 <body>
     <main id="screenLobby" class="screen">
         <header class="brand"><div class="brand-icon">🎬</div><h1>VK Watch Party</h1><div class="muted">Смотрите видео вместе, где бы вы ни были</div></header>
+        <section class="card"><h2>Представьтесь</h2><p>Ник будет виден другим участникам комнаты.</p><input id="nicknameInput" maxlength="24" autocomplete="nickname" placeholder="Ваш ник"></section>
         <section class="card"><h2>Создайте свою комнату</h2><p>Оператор выбирает видео и управляет общим воспроизведением.</p><button id="createRoomButton" class="wide">🎬 Создать комнату</button></section>
         <section class="card"><h2>Присоединиться к друзьям</h2><p>Введите код комнаты или вставьте пригласительную ссылку.</p><div class="join-row"><input id="roomCodeInput" autocomplete="off" placeholder="Введите код или ссылку комнаты"><button id="joinRoomButton">🚀 Подключиться</button></div></section>
         <div id="lobbyStatus" class="status" role="status"></div>
     </main>
 
     <main id="screenRoom" class="screen hidden">
-        <header class="room-header"><div id="roomCodeLabel" class="room-code"></div><span id="roleBadge" class="role-badge"></span><button id="inviteButton" class="secondary">🔗 Пригласить</button><button id="leaveButton" class="secondary">🚪 Выйти</button></header>
+        <header class="room-header"><div id="roomCodeLabel" class="room-code"></div><span id="roleBadge" class="role-badge"></span><span id="participantsLabel" class="role-badge"></span><button id="inviteButton" class="secondary">🔗 Пригласить</button><button id="leaveButton" class="secondary">🚪 Выйти</button></header>
         <section id="operatorPanel" class="hidden"><div class="operator-controls"><input id="videoUrlInput" type="url" placeholder="Ссылка на видео ВКонтакте"><button id="loadVideoButton">Загрузить</button></div></section>
         <div id="videoShell"><video id="player" controls playsinline></video></div>
         <div id="viewerActions" class="viewer-actions hidden"><button id="goLiveButton" class="secondary">🔄 В прямой эфир</button></div>
@@ -66,9 +67,11 @@
         const ROOM_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
         const initialRoom = String(new URLSearchParams(location.search).get('room') || tg?.initDataUnsafe?.start_param || '').trim().toUpperCase();
 
-        let roomId = null, hostToken = null, isOperator = false, ws = null, hls = null;
+        let roomId = null, hostToken = null, isOperator = false, userNickname = '', ws = null, hls = null;
         let isRemote = false, isSeeking = false, currentProxyUrl = '';
         let latestStreamSnapshot = null;
+        const savedNickname = localStorage.getItem('vk-watch:nickname') || '';
+        if ($('nicknameInput')) $('nicknameInput').value = savedNickname;
 
         function logDebug(message, details) {
             const log = $('debugLog');
@@ -145,7 +148,7 @@
             // Install the message handler immediately: never leave the first INIT frame unhandled.
             ws.onmessage = handleRoomMessage;
             ws.onopen = () => {
-                ws.send(JSON.stringify({ type: 'auth', host_token: hostToken }));
+                ws.send(JSON.stringify({ type: 'auth', host_token: hostToken, nickname: userNickname }));
                 $('roomStatus').textContent = 'Подключаемся к комнате...';
                 setTimeout(() => {
                     if (ws?.readyState === WebSocket.OPEN) requestSync();
@@ -158,6 +161,8 @@
         function enterRoom(code, token = null) {
             roomId = normalizeRoomCode(code);
             if (!roomId) return;
+            userNickname = String($('nicknameInput')?.value || '').trim().slice(0, 24) || 'Гость';
+            localStorage.setItem('vk-watch:nickname', userNickname);
             hostToken = token || localStorage.getItem(HOST_TOKEN_PREFIX + roomId);
             setRoomUrl(roomId);
             $('roomCodeLabel').textContent = `Комната ${roomId}`;
@@ -263,10 +268,13 @@
                 const state = msg.state || {};
                 if (msg.role) {
                     isOperator = msg.role === 'operator';
-                    $('roleBadge').textContent = isOperator ? '👑 Оператор' : '👀 Зритель';
+                    $('roleBadge').textContent = isOperator ? `👑 ${msg.nickname || userNickname || 'Оператор'}` : `👀 ${msg.nickname || userNickname || 'Зритель'}`;
                     $('operatorPanel').classList.toggle('hidden', !isOperator);
                     $('viewerActions').classList.toggle('hidden', isOperator);
                     $('roomStatus').textContent = `Комната подключена как ${isOperator ? 'Оператор' : 'Зритель'}.`;
+                }
+                if (Array.isArray(msg.participants)) {
+                    $('participantsLabel').textContent = `Участники: ${msg.participants.length} (${msg.participants.join(', ')})`;
                 }
                 latestStreamSnapshot = msg;
                 logDebug('Получено состояние комнаты', { has_stream_url: Boolean(state.stream_url), playing: state.playing, actual_time: state.actual_time, state });
@@ -352,13 +360,8 @@
         window.addEventListener('beforeunload', () => { if (ws && ws.readyState < WebSocket.CLOSING) ws.close(); });
 
         if (initialRoom) {
-            roomId = initialRoom;
-            hostToken = localStorage.getItem(HOST_TOKEN_PREFIX + roomId);
-            setRoomUrl(roomId);
-            $('roomCodeLabel').textContent = `Комната ${roomId}`;
-            $('screenLobby').classList.add('hidden');
-            $('screenRoom').classList.remove('hidden');
-            openSocket();
+            $('roomCodeInput').value = initialRoom;
+            if (savedNickname) enterRoom(initialRoom);
         }
     </script>
 </body>
