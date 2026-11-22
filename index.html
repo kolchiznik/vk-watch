@@ -68,7 +68,8 @@
         const initialRoom = String(new URLSearchParams(location.search).get('room') || tg?.initDataUnsafe?.start_param || '').trim().toUpperCase();
 
         let roomId = null, hostToken = null, isOperator = false, ws = null, hls = null;
-        let isRemote = false, isSeeking = false, localViewerPaused = false, currentProxyUrl = '';
+        let isRemote = false, isSeeking = false, currentProxyUrl = '';
+        let latestStreamSnapshot = null;
 
         function logDebug(message, details) {
             const log = $('debugLog');
@@ -106,6 +107,38 @@
 
         function requestSync() {
             if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'sync_request' }));
+        }
+
+        function syncToStream(state, serverTime) {
+            if (!state) return;
+            const player = $('player');
+            const actualTime = Number(state.actual_time ?? state.time);
+            if (!Number.isFinite(actualTime)) return;
+
+            let targetTime = actualTime;
+            if (state.playing && Number.isFinite(Number(serverTime))) {
+                targetTime += Math.max(0, Date.now() / 1000 - Number(serverTime));
+            }
+            targetTime = Math.max(0, targetTime);
+
+            if (state.playing === false) {
+                if (Math.abs(player.currentTime - targetTime) > 0.05) player.currentTime = targetTime;
+                player.pause();
+                return;
+            }
+
+            if (Math.abs(player.currentTime - targetTime) > 1.2) {
+                isRemote = true;
+                player.currentTime = targetTime;
+                setTimeout(() => { isRemote = false; }, 350);
+            }
+            player.play().catch(error => {
+                if (error?.name === 'NotAllowedError') {
+                    player.muted = true;
+                    player.play().catch(() => {});
+                    $('enableSoundButton').style.display = 'block';
+                }
+            });
         }
 
         function openSocket() {
@@ -175,7 +208,7 @@
             if (ws && ws.readyState < WebSocket.CLOSING) ws.close(1000, 'Left room');
             ws = null;
             stopMedia();
-            roomId = null; hostToken = null; isOperator = false; localViewerPaused = false;
+            roomId = null; hostToken = null; isOperator = false;
             const url = new URL(location.href); url.search = ''; history.replaceState({}, '', url);
             $('screenRoom').classList.add('hidden'); $('screenLobby').classList.remove('hidden');
             $('lobbyStatus').textContent = '';
@@ -185,6 +218,7 @@
             if (!streamUrl) return;
             const player = $('player');
             const startPosition = Math.max(0, Number(targetTime) || 0);
+            if (initialSnapshot) latestStreamSnapshot = initialSnapshot;
             const proxyUrl = makeProxyUrl(streamUrl, headers);
             currentProxyUrl = proxyUrl;
             if (hls) { hls.destroy(); hls = null; }
@@ -192,21 +226,23 @@
             const useHls = Boolean(isHls || streamUrl.toLowerCase().includes('.m3u8')) && Boolean(window.Hls?.isSupported());
             logDebug(`Выбран плеер: ${useHls ? 'Hls.js' : 'нативный <video>'}`, { targetTime: startPosition, streamUrl });
 
-            const play = () => {
-                if (!shouldPlay) return;
-                player.play().catch(error => {
-                    if (error.name === 'NotAllowedError') {
-                        player.muted = true; player.play().catch(() => {}); $('enableSoundButton').style.display = 'block';
-                    }
-                });
-            };
             if (useHls) {
                 hls = new Hls({ startPosition, maxBufferLength: 60, maxMaxBufferLength: 120 });
                 hls.loadSource(proxyUrl); hls.attachMedia(player);
-                hls.on(Hls.Events.MANIFEST_PARSED, () => { player.currentTime = startPosition; play(); });
+                hls.on(Hls.Events.MANIFEST_PARSED, () => {
+                    player.currentTime = startPosition;
+                    if (latestStreamSnapshot && !isOperator) syncToStream(latestStreamSnapshot.state, latestStreamSnapshot.server_time);
+                    else if (shouldPlay) player.play().catch(() => {});
+                    else player.pause();
+                });
                 let corrected = false;
                 hls.on(Hls.Events.FRAG_LOADED, () => {
-                    if (!corrected && initialSnapshot) { corrected = true; updateViewer(initialSnapshot, true); }
+                    if (!corrected) {
+                        corrected = true;
+                        if (latestStreamSnapshot && !isOperator) syncToStream(latestStreamSnapshot.state, latestStreamSnapshot.server_time);
+                        else if (shouldPlay) player.play().catch(() => {});
+                        else player.pause();
+                    }
                 });
                 hls.on(Hls.Events.ERROR, (event, data) => {
                     logDebug('Ошибка Hls.js', { type: data.type, details: data.details, fatal: data.fatal });
@@ -216,83 +252,44 @@
                 player.src = proxyUrl;
                 player.onloadedmetadata = () => {
                     player.currentTime = startPosition;
-                    play();
-                    if (initialSnapshot) updateViewer(initialSnapshot, true);
+                    if (latestStreamSnapshot && !isOperator) syncToStream(latestStreamSnapshot.state, latestStreamSnapshot.server_time);
+                    else if (shouldPlay) player.play().catch(() => {});
+                    else player.pause();
                 };
-            }
-        }
-
-        function updateViewer(snapshot, force = false) {
-            if (isOperator || !snapshot) return;
-            const state = snapshot.state || snapshot;
-            const serverTime = Number(snapshot.server_time);
-            let target = Number(state.time ?? snapshot.time);
-            if (!Number.isFinite(target)) return;
-            if (state.playing && Number.isFinite(serverTime)) target += Math.max(0, Date.now() / 1000 - serverTime);
-            if (localViewerPaused && state.playing && !force) return;
-
-            if (!currentProxyUrl && state.stream_url) {
-                setVideoSource(state.stream_url, target, Boolean(state.playing), state.is_hls, state.http_headers || {}, snapshot);
-                return;
-            }
-            if (Math.abs($('player').currentTime - target) > 1.5) {
-                isRemote = true;
-                $('player').currentTime = Math.max(0, target);
-                setTimeout(() => { isRemote = false; }, 350);
-            }
-            if (state.playing) {
-                $('player').play().catch(error => {
-                    if (error.name === 'NotAllowedError') {
-                        $('player').muted = true; $('player').play().catch(() => {}); $('enableSoundButton').style.display = 'block';
-                    }
-                });
-            } else {
-                isRemote = true; $('player').pause(); setTimeout(() => { isRemote = false; }, 350);
             }
         }
 
         function handleRoomMessage(event) {
             let msg;
             try { msg = JSON.parse(event.data); } catch (error) { logDebug('WebSocket JSON parse error', error.message); return; }
-            if (msg.type === 'init') {
+            if (msg.type === 'room_state') {
                 const state = msg.state || {};
-                logDebug('Получено init от сервера', { has_stream_url: Boolean(state.stream_url), playing: state.playing, time: state.time, state });
-                isOperator = msg.role === 'operator';
-                $('roleBadge').textContent = isOperator ? '👑 Оператор' : '👀 Зритель';
-                $('operatorPanel').classList.toggle('hidden', !isOperator);
-                $('viewerActions').classList.toggle('hidden', isOperator);
-                $('roomStatus').textContent = `Комната подключена как ${isOperator ? 'Оператор' : 'Зритель'}.`;
+                if (msg.role) {
+                    isOperator = msg.role === 'operator';
+                    $('roleBadge').textContent = isOperator ? '👑 Оператор' : '👀 Зритель';
+                    $('operatorPanel').classList.toggle('hidden', !isOperator);
+                    $('viewerActions').classList.toggle('hidden', isOperator);
+                    $('roomStatus').textContent = `Комната подключена как ${isOperator ? 'Оператор' : 'Зритель'}.`;
+                }
+                latestStreamSnapshot = msg;
+                logDebug('Получено состояние комнаты', { has_stream_url: Boolean(state.stream_url), playing: state.playing, actual_time: state.actual_time, state });
+
                 if (state.stream_url) {
-                    const elapsed = state.playing ? Math.max(0, Date.now() / 1000 - Number(msg.server_time)) : 0;
-                    setVideoSource(state.stream_url, Number(state.time) + elapsed, state.playing, state.is_hls, state.http_headers || {}, { state, server_time: msg.server_time });
-                } else if (isOperator) {
+                    let target = Number(state.actual_time);
+                    if (state.playing && Number.isFinite(Number(msg.server_time))) {
+                        target += Math.max(0, Date.now() / 1000 - Number(msg.server_time));
+                    }
+                    const needsSource = !currentProxyUrl || (makeProxyUrl(state.stream_url, state.http_headers || {}) !== currentProxyUrl);
+                    if (needsSource) {
+                        setVideoSource(state.stream_url, target, state.playing, state.is_hls, state.http_headers || {}, msg);
+                    } else if (!isOperator) {
+                        syncToStream(state, msg.server_time);
+                    }
+                } else if (isOperator && msg.role) {
                     $('roomStatus').textContent = 'Комната готова. Загрузите видео.';
                 }
                 return;
             }
-            if (msg.type === 'sync') {
-                const state = msg.state || {};
-                logDebug('Получено sync от сервера', { has_stream_url: Boolean(state.stream_url), playing: state.playing, time: state.time, state });
-                if (!currentProxyUrl && state.stream_url && !isOperator) {
-                    const elapsed = state.playing ? Math.max(0, Date.now() / 1000 - Number(msg.server_time)) : 0;
-                    setVideoSource(state.stream_url, Number(state.time) + elapsed, state.playing, state.is_hls, state.http_headers || {}, msg);
-                } else if (!isOperator) {
-                    updateViewer(msg);
-                }
-                return;
-            }
-            if (msg.type === 'load') {
-                const state = msg.state || msg;
-                logDebug('Получено load от сервера', { has_stream_url: Boolean(state.stream_url), playing: state.playing, time: state.time });
-                localViewerPaused = false;
-                if (state.stream_url) {
-                    const elapsed = state.playing ? Math.max(0, Date.now() / 1000 - Number(msg.server_time)) : 0;
-                    setVideoSource(state.stream_url, Number(state.time || 0) + elapsed, state.playing, state.is_hls, state.http_headers || {});
-                }
-                return;
-            }
-            if (isOperator) return;
-            if (msg.type === 'play' || msg.type === 'pause' || msg.type === 'seek') updateViewer(msg, true);
         }
 
         $('loadVideoButton').addEventListener('click', async () => {
@@ -317,27 +314,47 @@
         $('player').addEventListener('seeked', () => {
             setTimeout(() => { isSeeking = false; }, 120);
             if (isOperator && !isRemote && ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'seek', time: $('player').currentTime }));
+            else if (!isOperator && latestStreamSnapshot?.state) syncToStream(latestStreamSnapshot.state, latestStreamSnapshot.server_time);
         });
         $('player').addEventListener('play', () => {
             if (isOperator && !isRemote && ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'play', time: $('player').currentTime }));
-            else if (!isOperator && !isRemote) { localViewerPaused = false; requestSync(); }
+            else if (!isOperator && !isRemote && latestStreamSnapshot?.state) syncToStream(latestStreamSnapshot.state, latestStreamSnapshot.server_time);
         });
         $('player').addEventListener('pause', () => {
             if (isOperator && !isRemote && ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'pause', time: $('player').currentTime }));
-            else if (!isOperator && !isRemote && !$('player').ended) localViewerPaused = true;
+            else if (!isOperator && !isRemote && latestStreamSnapshot?.state?.playing) syncToStream(latestStreamSnapshot.state, latestStreamSnapshot.server_time);
         });
-        $('goLiveButton').addEventListener('click', () => { localViewerPaused = false; requestSync(); });
+        $('player').addEventListener('waiting', () => {
+            if (!isOperator && latestStreamSnapshot?.state) syncToStream(latestStreamSnapshot.state, latestStreamSnapshot.server_time);
+        });
+        $('player').addEventListener('stalled', () => {
+            if (!isOperator && latestStreamSnapshot?.state) syncToStream(latestStreamSnapshot.state, latestStreamSnapshot.server_time);
+        });
+        $('goLiveButton').addEventListener('click', () => {
+            if (latestStreamSnapshot && latestStreamSnapshot.state) {
+                syncToStream(latestStreamSnapshot.state, latestStreamSnapshot.server_time);
+            }
+            requestSync();
+        });
         $('enableSoundButton').addEventListener('click', async () => {
             $('player').muted = false;
             try { await $('player').play(); $('enableSoundButton').style.display = 'none'; } catch (error) { logDebug('Не удалось включить звук', error.message); }
+            if (latestStreamSnapshot && latestStreamSnapshot.state) {
+                syncToStream(latestStreamSnapshot.state, latestStreamSnapshot.server_time);
+            }
             requestSync();
         });
         $('player').addEventListener('error', () => logDebug('Ошибка элемента video', { code: $('player').error?.code, message: $('player').error?.message }));
-        setInterval(() => { if (!isSeeking && !$('player').paused && !localViewerPaused) requestSync(); }, 5000);
+        setInterval(() => { requestSync(); }, 3000);
+        setInterval(() => {
+            if (!isOperator && latestStreamSnapshot?.state) {
+                syncToStream(latestStreamSnapshot.state, latestStreamSnapshot.server_time);
+            }
+        }, 500);
 
         $('leaveButton').addEventListener('click', () => {
             if (ws && ws.readyState < WebSocket.CLOSING) ws.close(1000, 'Left room');
-            ws = null; stopMedia(); roomId = null; hostToken = null; isOperator = false; localViewerPaused = false;
+            ws = null; stopMedia(); roomId = null; hostToken = null; isOperator = false;
             const url = new URL(location.href); url.search = ''; history.replaceState({}, '', url);
             $('screenRoom').classList.add('hidden'); $('screenLobby').classList.remove('hidden'); $('lobbyStatus').textContent = '';
         });

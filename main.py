@@ -40,30 +40,30 @@ def get_room(room_id: str) -> dict:
                 "is_hls": False,
                 "http_headers": {},
                 "playing": False,
-                "time": 0.0,
-                "updated_at": time.time(),
+                "anchor_time": 0.0,
+                "anchor_timestamp": time.time(),
             },
         }
     return rooms[room_id]
 
 
-def room_snapshot(room: dict) -> dict:
+def get_room_state(room: dict) -> dict:
     now = time.time()
     state = room["state"]
-    current_time = float(state["time"])
+    anchor_time = float(state["anchor_time"])
+    actual_time = anchor_time
     if state["playing"]:
-        current_time += max(0.0, now - state["updated_at"])
+        actual_time += max(0.0, now - float(state["anchor_timestamp"]))
     return {
-        "state": {
-            "vk_url": state["vk_url"],
-            "stream_url": state["stream_url"],
-            "is_hls": state["is_hls"],
-            "http_headers": state["http_headers"],
-            "playing": state["playing"],
-            "time": current_time,
-            "updated_at": state["updated_at"],
-        },
-        "server_time": now,
+        "vk_url": state["vk_url"],
+        "stream_url": state["stream_url"],
+        "is_hls": state["is_hls"],
+        "http_headers": state["http_headers"],
+        "playing": bool(state["playing"]),
+        "anchor_time": anchor_time,
+        "anchor_timestamp": float(state["anchor_timestamp"]),
+        "actual_time": actual_time,
+        "time": actual_time,
     }
 
 
@@ -245,9 +245,11 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str):
     is_operator = bool(supplied_token and supplied_token == room["host_token"])
     room["connections"].add(websocket)
 
+    now = time.time()
     await websocket.send_text(json.dumps({
-        "type": "init",
-        **room_snapshot(room),
+        "type": "room_state",
+        "state": get_room_state(room),
+        "server_time": now,
         "role": "operator" if is_operator else "viewer",
     }))
 
@@ -260,7 +262,11 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str):
                 continue
             message_type = message.get("type")
             if message_type == "sync_request":
-                await websocket.send_text(json.dumps({"type": "sync", **room_snapshot(room)}))
+                await websocket.send_text(json.dumps({
+                    "type": "room_state",
+                    "state": get_room_state(room),
+                    "server_time": time.time(),
+                }))
                 continue
             if message_type not in ("load", "play", "pause", "seek") or not is_operator:
                 continue
@@ -273,24 +279,30 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str):
                     "stream_url": message.get("stream_url", ""),
                     "is_hls": bool(message.get("is_hls", False)),
                     "http_headers": message.get("http_headers") or {},
-                    "time": 0.0,
+                    "anchor_time": 0.0,
                     "playing": True,
-                    "updated_at": now,
+                    "anchor_timestamp": now,
                 })
             else:
                 try:
-                    current_time = max(0.0, float(message.get("time", state["time"])))
+                    current_time = max(0.0, float(message.get("time", state["anchor_time"])))
                 except (TypeError, ValueError):
-                    current_time = float(state["time"])
-                state["time"] = current_time
-                state["playing"] = message_type == "play"
-                state["updated_at"] = now
+                    current_time = float(state["anchor_time"])
+                state["anchor_time"] = current_time
+                state["anchor_timestamp"] = now
+                if message_type == "play":
+                    state["playing"] = True
+                elif message_type == "pause":
+                    state["playing"] = False
+                # seek preserves the current playing state
 
-            event = {"type": message_type, **room_snapshot(room)}
+            event = {
+                "type": "room_state",
+                "state": get_room_state(room),
+                "server_time": time.time(),
+            }
             disconnected = []
             for connection in tuple(room["connections"]):
-                if connection is websocket:
-                    continue
                 try:
                     await connection.send_text(json.dumps(event))
                 except Exception:
