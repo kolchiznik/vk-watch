@@ -205,6 +205,7 @@
         function enterRoom(code, token = null) {
             roomId = normalizeRoomCode(code);
             if (!roomId) return;
+            localViewerPaused = true;
             userNickname = String($('nicknameInput')?.value || '').trim().slice(0, 24) || 'Гость';
             localStorage.setItem('vk-watch:nickname', userNickname);
             hostToken = token || localStorage.getItem(HOST_TOKEN_PREFIX + roomId);
@@ -326,6 +327,7 @@
                 const state = msg.state || {};
                 if (msg.role) {
                     isOperator = msg.role === 'operator';
+                    if (!isOperator) localViewerPaused = true;
                     $('roleBadge').textContent = isOperator ? `👑 ${msg.nickname || userNickname || 'Оператор'}` : `👀 ${msg.nickname || userNickname || 'Зритель'}`;
                     $('operatorPanel').classList.toggle('hidden', !isOperator);
                     $('viewerActions').classList.toggle('hidden', isOperator);
