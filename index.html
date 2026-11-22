@@ -129,6 +129,7 @@
 
             if (state.playing === false) {
                 if (Math.abs(player.currentTime - targetTime) > 0.05) player.currentTime = targetTime;
+                player.playbackRate = 1;
                 player.pause();
                 return;
             }
@@ -137,13 +138,21 @@
                 isRemote = true;
                 player.currentTime = targetTime;
                 setTimeout(() => { isRemote = false; }, 350);
+                player.playbackRate = 1;
+            } else {
+                const drift = targetTime - player.currentTime;
+                if (drift > 0.25) player.playbackRate = 1.08;
+                else if (drift < -0.25) player.playbackRate = 0.92;
+                else player.playbackRate = 1;
             }
-            player.play().catch(error => {
-                if (error?.name === 'NotAllowedError') {
-                    player.muted = true;
-                    player.play().catch(() => {});
-                }
-            });
+            if (player.paused) {
+                player.play().catch(error => {
+                    if (error?.name === 'NotAllowedError') {
+                        player.muted = true;
+                        player.play().catch(() => {});
+                    }
+                });
+            }
         }
 
         function openSocket() {
