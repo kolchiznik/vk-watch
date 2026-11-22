@@ -68,7 +68,7 @@
         const initialRoom = String(new URLSearchParams(location.search).get('room') || tg?.initDataUnsafe?.start_param || '').trim().toUpperCase();
 
         let roomId = null, hostToken = null, isOperator = false, userNickname = '', ws = null, hls = null;
-        let isRemote = false, isSeeking = false, localSeekUntil = 0, currentProxyUrl = '';
+        let isRemote = false, isSeeking = false, localSeekUntil = 0, localViewerPaused = false, currentProxyUrl = '';
         let latestStreamSnapshot = null;
         const savedNickname = localStorage.getItem('vk-watch:nickname') || '';
         if ($('nicknameInput')) $('nicknameInput').value = savedNickname;
@@ -148,6 +148,13 @@
                 targetTime += Math.max(0, Date.now() / 1000 - Number(serverTime));
             }
             targetTime = Math.max(0, targetTime);
+
+            if (!isOperator && localViewerPaused) {
+                if (Math.abs(player.currentTime - targetTime) > 0.05) player.currentTime = targetTime;
+                player.playbackRate = 1;
+                player.pause();
+                return;
+            }
 
             if (state.playing === false) {
                 if (Math.abs(player.currentTime - targetTime) > 0.05) player.currentTime = targetTime;
@@ -370,12 +377,18 @@
         $('player').addEventListener('play', () => {
             if (isOperator && Date.now() < localSeekUntil) return;
             if (isOperator && !isRemote && ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'play', time: $('player').currentTime }));
-            else if (!isOperator && !isRemote && latestStreamSnapshot?.state) syncToStream(latestStreamSnapshot.state, latestStreamSnapshot.server_time);
+            else if (!isOperator) {
+                localViewerPaused = false;
+                if (latestStreamSnapshot?.state) syncToStream(latestStreamSnapshot.state, latestStreamSnapshot.server_time);
+            }
         });
         $('player').addEventListener('pause', () => {
             if (isOperator && Date.now() < localSeekUntil) return;
             if (isOperator && !isRemote && ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'pause', time: $('player').currentTime }));
-            else if (!isOperator && !isRemote && latestStreamSnapshot?.state?.playing) syncToStream(latestStreamSnapshot.state, latestStreamSnapshot.server_time);
+            else if (!isOperator && !isRemote) {
+                localViewerPaused = true;
+                if (latestStreamSnapshot?.state) syncToStream(latestStreamSnapshot.state, latestStreamSnapshot.server_time);
+            }
         });
         $('player').addEventListener('waiting', () => {
             if (!isOperator && latestStreamSnapshot?.state) syncToStream(latestStreamSnapshot.state, latestStreamSnapshot.server_time);
@@ -384,6 +397,7 @@
             if (!isOperator && latestStreamSnapshot?.state) syncToStream(latestStreamSnapshot.state, latestStreamSnapshot.server_time);
         });
         $('goLiveButton').addEventListener('click', () => {
+            localViewerPaused = false;
             if (latestStreamSnapshot && latestStreamSnapshot.state) {
                 syncToStream(latestStreamSnapshot.state, latestStreamSnapshot.server_time);
             }
@@ -411,7 +425,7 @@
 
         $('leaveButton').addEventListener('click', () => {
             if (ws && ws.readyState < WebSocket.CLOSING) ws.close(1000, 'Left room');
-            ws = null; stopMedia(); roomId = null; hostToken = null; isOperator = false;
+            ws = null; stopMedia(); roomId = null; hostToken = null; isOperator = false; localViewerPaused = false;
             const url = new URL(location.href); url.search = ''; history.replaceState({}, '', url);
             $('screenRoom').classList.add('hidden'); $('screenLobby').classList.remove('hidden'); $('lobbyStatus').textContent = '';
         });
