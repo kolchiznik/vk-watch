@@ -33,6 +33,7 @@ def get_room(room_id: str):
     if room_id not in rooms:
         rooms[room_id] = {
             "connections": set(),
+            "host_token": None,
             "state": {
                 "vk_url": "",
                 "stream_url": "",
@@ -46,19 +47,23 @@ def get_room(room_id: str):
     return rooms[room_id]
 
 
-def get_current_room_state(room: dict) -> dict:
+def room_snapshot(room: dict):
+    now = time.time()
     state = room["state"]
     current_time = state["time"]
     if state["playing"]:
-        current_time += max(0.0, time.time() - state["updated_at"])
+        current_time += max(0.0, now - state["updated_at"])
     return {
-        "stream_url": state["stream_url"],
-        "vk_url": state["vk_url"],
-        "is_hls": state["is_hls"],
-        "http_headers": state["http_headers"],
-        "playing": state["playing"],
-        "time": current_time,
-        "updated_at": state["updated_at"],
+        "state": {
+            "vk_url": state["vk_url"],
+            "stream_url": state["stream_url"],
+            "is_hls": state["is_hls"],
+            "http_headers": state["http_headers"],
+            "playing": state["playing"],
+            "time": current_time,
+            "updated_at": state["updated_at"],
+        },
+        "server_time": now,
     }
 
 
@@ -66,24 +71,25 @@ def validate_public_url(url: str) -> None:
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https") or not parsed.hostname:
         raise HTTPException(status_code=400, detail="Некорректный URL потока")
-
     try:
         addresses = {entry[4][0] for entry in socket.getaddrinfo(parsed.hostname, None)}
     except (socket.gaierror, ValueError):
         raise HTTPException(status_code=400, detail="Не удалось определить хост потока")
-    if not addresses:
-        raise HTTPException(status_code=400, detail="Не удалось определить хост потока")
-
-    for address in addresses:
-        if not ipaddress.ip_address(address).is_global:
-            raise HTTPException(status_code=400, detail="Прокси-ссылка недоступна")
+    if not addresses or any(not ipaddress.ip_address(address).is_global for address in addresses):
+        raise HTTPException(status_code=400, detail="Прокси-ссылка недоступна")
 
 
 def proxy_url(url: str, user_agent: str, referer: str) -> str:
     return "/api/proxy?" + urlencode({"url": url, "user_agent": user_agent, "referer": referer})
 
 
+def is_media_segment(url: str) -> bool:
+    path = urlparse(url).path.lower()
+    return path.endswith((".ts", ".m4s", ".mp4", ".aac", ".vtt"))
+
+
 def rewrite_m3u8_playlist(text: str, playlist_url: str, user_agent: str, referer: str) -> str:
+    """Proxy child playlists/keys; keep media segment URLs absolute and CDN-direct."""
     import re
 
     rewritten_lines = []
@@ -98,11 +104,20 @@ def rewrite_m3u8_playlist(text: str, playlist_url: str, user_agent: str, referer
                 if source_uri.lower().startswith("data:"):
                     return match.group(0)
                 absolute_uri = urljoin(playlist_url, source_uri)
-                return f'URI="{proxy_url(absolute_uri, user_agent, referer)}"'
+                if is_media_segment(absolute_uri):
+                    replacement = absolute_uri
+                else:
+                    replacement = proxy_url(absolute_uri, user_agent, referer)
+                return f'URI="{replacement}"'
 
             rewritten_lines.append(re.sub(r'URI="([^"]+)"', replace_uri, stripped, flags=re.IGNORECASE))
+            continue
+
+        absolute_uri = urljoin(playlist_url, stripped)
+        if urlparse(absolute_uri).path.lower().endswith(".m3u8"):
+            rewritten_lines.append(proxy_url(absolute_uri, user_agent, referer))
         else:
-            rewritten_lines.append(proxy_url(urljoin(playlist_url, stripped), user_agent, referer))
+            rewritten_lines.append(absolute_uri)
 
     return "\n".join(rewritten_lines) + ("\n" if text.endswith("\n") else "")
 
@@ -130,7 +145,6 @@ async def extract_vk(url: str):
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
-
         stream_url = info.get("url")
         if not stream_url:
             raise ValueError("Не удалось получить поток")
@@ -143,7 +157,6 @@ async def extract_vk(url: str):
             "User-Agent": extracted_headers.get("User-Agent") or "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
             "Referer": extracted_headers.get("Referer") or "https://vkvideo.ru/",
         }
-
         validate_public_url(stream_url)
         return {
             "stream_url": stream_url,
@@ -169,10 +182,8 @@ async def proxy_video(
     validate_public_url(url)
     headers = stream_request_headers(user_agent, referer, request)
     client: httpx.AsyncClient = request.app.state.http_client
-
     try:
         response = await client.send(client.build_request("GET", url, headers=headers), stream=True)
-
         for _ in range(5):
             if not response.is_redirect:
                 break
@@ -199,7 +210,6 @@ async def proxy_video(
         upstream_status = response.status_code
         content_type = response.headers.get("Content-Type", "application/octet-stream")
         is_m3u8 = ".m3u8" in url.lower() or "mpegurl" in content_type.lower() or "application/vnd.apple" in content_type.lower()
-
         if is_m3u8:
             body = await response.aread()
             await response.aclose()
@@ -208,12 +218,7 @@ async def proxy_video(
                 content=playlist,
                 status_code=upstream_status,
                 media_type="application/vnd.apple.mpegurl",
-                headers={
-                    "Accept-Ranges": "bytes",
-                    "Cache-Control": "no-store",
-                    "X-Proxy-Upstream-Status": str(upstream_status),
-                    "X-Proxy-Upstream-Content-Type": content_type,
-                },
+                headers={"Cache-Control": "no-store", "X-Proxy-Upstream-Status": str(upstream_status), "X-Proxy-Upstream-Content-Type": content_type},
             )
 
         response_headers = {
@@ -244,37 +249,46 @@ async def proxy_video(
 async def websocket_endpoint(websocket: WebSocket, room_id: str):
     await websocket.accept()
     room = get_room(room_id)
+
+    # The first frame authenticates the operator; a room can only claim its token once.
+    try:
+        auth_msg = json.loads(await websocket.receive_text())
+    except (WebSocketDisconnect, json.JSONDecodeError):
+        return
+    supplied_token = auth_msg.get("host_token") if auth_msg.get("type") == "auth" else None
+    if room["host_token"] is None and isinstance(supplied_token, str) and supplied_token:
+        room["host_token"] = supplied_token
+    is_host = bool(supplied_token and supplied_token == room["host_token"])
     room["connections"].add(websocket)
 
-    server_time = time.time()
-    init_state = get_current_room_state(room)
+    snapshot = room_snapshot(room)
     await websocket.send_text(json.dumps({
         "type": "init",
-        "state": init_state,
-        "server_time": server_time,
+        **snapshot,
+        "role": "operator" if is_host else "viewer",
     }))
 
     try:
         while True:
             data = await websocket.receive_text()
-            msg = json.loads(data)
+            try:
+                msg = json.loads(data)
+            except json.JSONDecodeError:
+                continue
             msg_type = msg.get("type")
 
             if msg_type == "sync_request":
-                server_time = time.time()
-                sync_state = get_current_room_state(room)
-                await websocket.send_text(json.dumps({
-                    "type": "sync",
-                    "state": sync_state,
-                    "server_time": server_time,
-                    "playing": sync_state["playing"],
-                    "time": sync_state["time"],
-                }))
+                snapshot = room_snapshot(room)
+                await websocket.send_text(json.dumps({"type": "sync", **snapshot}))
                 continue
 
+            if msg_type not in ("load", "play", "pause", "seek") or not is_host:
+                continue
+
+            now = time.time()
+            state = room["state"]
             if msg_type == "load":
-                now = time.time()
-                room["state"].update({
+                state.update({
                     "vk_url": msg.get("vk_url", ""),
                     "stream_url": msg.get("stream_url", ""),
                     "is_hls": bool(msg.get("is_hls", False)),
@@ -283,16 +297,14 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str):
                     "playing": True,
                     "updated_at": now,
                 })
-            elif msg_type in ("play", "pause", "seek"):
-                now = time.time()
-                state_time = msg.get("time", room["state"]["time"])
+            else:
                 try:
-                    state_time = max(0.0, float(state_time))
+                    event_time = max(0.0, float(msg.get("time", state["time"])))
                 except (TypeError, ValueError):
-                    state_time = room["state"]["time"]
-                room["state"]["time"] = state_time
-                room["state"]["playing"] = msg_type == "play"
-                room["state"]["updated_at"] = now
+                    event_time = state["time"]
+                state["time"] = event_time
+                state["playing"] = msg_type == "play"
+                state["updated_at"] = now
 
             disconnected = []
             for connection in room["connections"]:
@@ -304,7 +316,7 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str):
                     disconnected.append(connection)
             for connection in disconnected:
                 room["connections"].discard(connection)
-    except (WebSocketDisconnect, json.JSONDecodeError):
+    except WebSocketDisconnect:
         pass
     finally:
         room["connections"].discard(websocket)
