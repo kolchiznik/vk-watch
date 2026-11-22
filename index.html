@@ -123,6 +123,10 @@
 
         function updateRoomStatus(state, serverTime) {
             if (!state?.stream_url) return;
+            if (!isOperator && localViewerPaused) {
+                $('roomStatus').textContent = `⏸ Локальная пауза • ${formatStreamTime($('player').currentTime)}`;
+                return;
+            }
             let actualTime = Number(state.actual_time ?? state.time);
             if (state.playing && Number.isFinite(Number(serverTime))) {
                 actualTime += Math.max(0, Date.now() / 1000 - Number(serverTime));
@@ -135,6 +139,7 @@
         function syncToStream(state, serverTime) {
             if (!state) return;
             const player = $('player');
+            if (!isOperator && localViewerPaused) return;
             if (isRemote) return;
             if (!player.currentSrc || player.readyState < HTMLMediaElement.HAVE_METADATA) {
                 if (state.playing === false) player.pause();
@@ -148,13 +153,6 @@
                 targetTime += Math.max(0, Date.now() / 1000 - Number(serverTime));
             }
             targetTime = Math.max(0, targetTime);
-
-            if (!isOperator && localViewerPaused) {
-                if (Math.abs(player.currentTime - targetTime) > 0.05) player.currentTime = targetTime;
-                player.playbackRate = 1;
-                player.pause();
-                return;
-            }
 
             if (state.playing === false) {
                 if (Math.abs(player.currentTime - targetTime) > 0.05) player.currentTime = targetTime;
@@ -380,6 +378,7 @@
             else if (!isOperator) {
                 localViewerPaused = false;
                 if (latestStreamSnapshot?.state) syncToStream(latestStreamSnapshot.state, latestStreamSnapshot.server_time);
+                requestSync();
             }
         });
         $('player').addEventListener('pause', () => {
@@ -387,7 +386,7 @@
             if (isOperator && !isRemote && ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'pause', time: $('player').currentTime }));
             else if (!isOperator && !isRemote) {
                 localViewerPaused = true;
-                if (latestStreamSnapshot?.state) syncToStream(latestStreamSnapshot.state, latestStreamSnapshot.server_time);
+                $('roomStatus').textContent = `⏸ Локальная пауза • ${formatStreamTime($('player').currentTime)}`;
             }
         });
         $('player').addEventListener('waiting', () => {
