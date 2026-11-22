@@ -53,7 +53,7 @@
     <main id="screenRoom" class="screen hidden">
         <header class="room-header"><div id="roomCodeLabel" class="room-code"></div><span id="roleBadge" class="role-badge"></span><span id="participantsLabel" class="role-badge"></span><button id="inviteButton" class="secondary">🔗 Пригласить</button><button id="leaveButton" class="secondary">🚪 Выйти</button></header>
         <section id="operatorPanel" class="hidden"><div class="operator-controls"><input id="videoUrlInput" type="url" placeholder="Ссылка на видео ВКонтакте"><button id="loadVideoButton">Загрузить</button></div></section>
-        <div id="videoShell"><video id="player" controls playsinline></video></div>
+        <div id="videoShell"><video id="player" controls playsinline preload="auto"></video></div>
         <div id="viewerActions" class="viewer-actions hidden"><button id="goLiveButton" class="secondary">🔄 В прямой эфир</button></div>
         <div id="roomStatus" class="status" role="status">Подключаемся к комнате...</div>
         <details><summary>Отладочный лог</summary><pre id="debugLog" aria-live="polite">Лог пуст.</pre></details>
@@ -114,6 +114,10 @@
         function syncToStream(state, serverTime) {
             if (!state) return;
             const player = $('player');
+            if (!player.currentSrc || player.readyState < HTMLMediaElement.HAVE_METADATA) {
+                if (state.playing === false) player.pause();
+                return;
+            }
             const actualTime = Number(state.actual_time ?? state.time);
             if (!Number.isFinite(actualTime)) return;
 
@@ -257,6 +261,12 @@
                     if (latestStreamSnapshot && !isOperator) syncToStream(latestStreamSnapshot.state, latestStreamSnapshot.server_time);
                     else if (shouldPlay) player.play().catch(() => {});
                     else player.pause();
+                };
+                player.onloadeddata = () => {
+                    if (latestStreamSnapshot && !isOperator) syncToStream(latestStreamSnapshot.state, latestStreamSnapshot.server_time);
+                };
+                player.oncanplay = () => {
+                    if (latestStreamSnapshot && !isOperator) syncToStream(latestStreamSnapshot.state, latestStreamSnapshot.server_time);
                 };
             }
         }
