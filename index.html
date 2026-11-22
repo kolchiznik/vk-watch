@@ -314,6 +314,7 @@
         $('player').addEventListener('seeked', () => {
             setTimeout(() => { isSeeking = false; }, 120);
             if (isOperator && !isRemote && ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'seek', time: $('player').currentTime }));
+            else if (!isOperator && latestStreamSnapshot?.state) syncToStream(latestStreamSnapshot.state, latestStreamSnapshot.server_time);
         });
         $('player').addEventListener('play', () => {
             if (isOperator && !isRemote && ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'play', time: $('player').currentTime }));
@@ -322,6 +323,12 @@
         $('player').addEventListener('pause', () => {
             if (isOperator && !isRemote && ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'pause', time: $('player').currentTime }));
             else if (!isOperator && !isRemote && latestStreamSnapshot?.state?.playing) syncToStream(latestStreamSnapshot.state, latestStreamSnapshot.server_time);
+        });
+        $('player').addEventListener('waiting', () => {
+            if (!isOperator && latestStreamSnapshot?.state) syncToStream(latestStreamSnapshot.state, latestStreamSnapshot.server_time);
+        });
+        $('player').addEventListener('stalled', () => {
+            if (!isOperator && latestStreamSnapshot?.state) syncToStream(latestStreamSnapshot.state, latestStreamSnapshot.server_time);
         });
         $('goLiveButton').addEventListener('click', () => {
             if (latestStreamSnapshot && latestStreamSnapshot.state) {
@@ -338,7 +345,12 @@
             requestSync();
         });
         $('player').addEventListener('error', () => logDebug('Ошибка элемента video', { code: $('player').error?.code, message: $('player').error?.message }));
-        setInterval(() => { if (!isSeeking) requestSync(); }, 3000);
+        setInterval(() => { requestSync(); }, 3000);
+        setInterval(() => {
+            if (!isOperator && latestStreamSnapshot?.state) {
+                syncToStream(latestStreamSnapshot.state, latestStreamSnapshot.server_time);
+            }
+        }, 500);
 
         $('leaveButton').addEventListener('click', () => {
             if (ws && ws.readyState < WebSocket.CLOSING) ws.close(1000, 'Left room');
