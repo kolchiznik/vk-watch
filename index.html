@@ -34,7 +34,6 @@
         .operator-controls { margin: 12px 0; }
         #videoShell { margin-top: 12px; }
         video { display: block; width: 100%; max-height: 70vh; border-radius: 14px; background: #000; }
-        .viewer-actions { display: flex; gap: 8px; margin-top: 10px; }
         .status { min-height: 20px; color: #aaa; font-size: 13px; margin-top: 12px; }
         @media (max-width: 520px) { body { padding: 12px; } .room-header { gap: 7px; } .room-code { width: 100%; } .join-row { flex-direction: column; } }
     </style>
@@ -51,7 +50,6 @@
         <header class="room-header"><div id="roomCodeLabel" class="room-code"></div><span id="roleBadge" class="role-badge"></span><span id="participantsLabel" class="role-badge"></span><button id="inviteButton" class="secondary">🔗 Пригласить</button><button id="leaveButton" class="secondary">🚪 Выйти</button></header>
         <section id="operatorPanel" class="hidden"><div class="operator-controls"><input id="videoUrlInput" type="url" placeholder="Ссылка на видео ВКонтакте"><button id="loadVideoButton">Загрузить</button></div></section>
         <div id="videoShell"><video id="player" controls playsinline preload="auto"></video></div>
-        <div id="viewerActions" class="viewer-actions hidden"><button id="goLiveButton" class="secondary">🔄 В прямой эфир</button></div>
     </main>
 
     <script>
@@ -416,13 +414,6 @@
                     if ($('player').paused === false) syncToStream(latestStreamSnapshot.state, latestStreamSnapshot.server_time);
                 }, 1200);
             }
-        });
-        $('goLiveButton').addEventListener('click', () => {
-            localViewerPaused = false;
-            if (latestStreamSnapshot && latestStreamSnapshot.state) {
-                syncToStream(latestStreamSnapshot.state, latestStreamSnapshot.server_time);
-            }
-            requestSync();
         });
         $('player').addEventListener('error', () => logDebug('Ошибка элемента video', { code: $('player').error?.code, message: $('player').error?.message }));
         setInterval(() => { requestSync(); }, 3000);
