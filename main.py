@@ -141,9 +141,17 @@ async def index():
 @app.get("/api/extract")
 async def extract_vk(url: str):
     ydl_opts = {
-        "format": "best[height<=720][ext=mp4]/best[height<=720]/best",
+        "format": "best[height<=720]/best",
         "quiet": True,
         "no_warnings": True,
+        "socket_timeout": 30,
+        "retries": 3,
+        "fragment_retries": 3,
+        "noprogress": True,
+        "http_headers": {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+            "Referer": "https://vkvideo.ru/",
+        },
     }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -171,7 +179,10 @@ async def extract_vk(url: str):
     except HTTPException:
         raise
     except Exception as error:
-        raise HTTPException(status_code=400, detail=str(error))
+        message = str(error)
+        if "No address associated with hostname" in message or "Connection" in message or "TransportError" in message:
+            raise HTTPException(status_code=502, detail=f"Сервис видео временно недоступен: {message}")
+        raise HTTPException(status_code=400, detail=message)
 
 
 @app.get("/api/proxy")
