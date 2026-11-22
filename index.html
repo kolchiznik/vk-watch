@@ -3,71 +3,38 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>VK Watch Party</title>
     <meta name="theme-color" content="#181818">
+    <title>VK Watch Party</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.20/dist/hls.min.js"></script>
     <style>
         :root { color-scheme: dark; }
         * { box-sizing: border-box; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            background: var(--tg-theme-bg-color, #181818);
-            color: var(--tg-theme-text-color, #fff);
-            margin: 0;
-            min-height: 100vh;
-            padding: 18px;
-        }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: var(--tg-theme-bg-color, #181818); color: var(--tg-theme-text-color, #fff); margin: 0; min-height: 100vh; padding: 18px; }
         button, input { font: inherit; }
-        button {
-            border: 0;
-            border-radius: 12px;
-            padding: 12px 16px;
-            background: var(--tg-theme-button-color, #2ea6ff);
-            color: var(--tg-theme-button-text-color, #fff);
-            font-weight: 650;
-            cursor: pointer;
-        }
+        button { border: 0; border-radius: 12px; padding: 12px 16px; background: var(--tg-theme-button-color, #2ea6ff); color: var(--tg-theme-button-text-color, #fff); font-weight: 650; cursor: pointer; }
         button:disabled { opacity: .5; cursor: default; }
-        input {
-            min-width: 0;
-            width: 100%;
-            border: 1px solid #444;
-            border-radius: 12px;
-            padding: 13px 14px;
-            background: #252525;
-            color: #fff;
-        }
+        input { min-width: 0; width: 100%; border: 1px solid #444; border-radius: 12px; padding: 13px 14px; background: #252525; color: #fff; }
         .screen { width: min(760px, 100%); margin: 0 auto; }
         .hidden { display: none !important; }
         .brand { text-align: center; padding: 9vh 0 24px; }
         .brand-icon { font-size: 52px; }
         h1 { margin: 8px 0; font-size: 28px; }
         .muted { color: #aaa; }
-        .card {
-            background: #222;
-            border: 1px solid #333;
-            border-radius: 18px;
-            padding: 20px;
-            margin: 14px 0;
-        }
+        .card { background: #222; border: 1px solid #333; border-radius: 18px; padding: 20px; margin: 14px 0; }
         .card h2 { margin: 0 0 8px; font-size: 19px; }
         .card p { margin: 0 0 15px; color: #aaa; line-height: 1.45; }
         .wide { width: 100%; }
-        .join-row { display: flex; gap: 9px; }
-        .join-row button { white-space: nowrap; }
+        .join-row, .operator-controls { display: flex; gap: 9px; }
+        .join-row button, .operator-controls button { white-space: nowrap; }
         .room-header { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; margin-bottom: 14px; }
         .room-code { font-size: 20px; font-weight: 750; letter-spacing: 2px; margin-right: auto; }
         .role-badge { border-radius: 999px; background: #303030; padding: 7px 10px; font-size: 13px; }
         .secondary { background: #333; color: #fff; }
-        .operator-controls { display: flex; gap: 8px; margin: 12px 0; }
+        .operator-controls { margin: 12px 0; }
         #videoShell { position: relative; margin-top: 12px; }
         video { display: block; width: 100%; max-height: 70vh; border-radius: 14px; background: #000; }
-        #enableSoundButton {
-            display: none; position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%);
-            z-index: 20; width: max-content; max-width: calc(100% - 24px);
-            background: rgba(25,25,25,.94); color: #fff; border: 1px solid #777;
-        }
+        #enableSoundButton { display: none; position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 20; width: max-content; max-width: calc(100% - 24px); background: rgba(25,25,25,.94); color: #fff; border: 1px solid #777; }
         .viewer-actions { display: flex; gap: 8px; margin-top: 10px; }
         .status { min-height: 20px; color: #aaa; font-size: 13px; margin-top: 12px; }
         details { margin-top: 18px; color: #aaa; }
@@ -77,148 +44,97 @@
 </head>
 <body>
     <main id="screenLobby" class="screen">
-        <header class="brand">
-            <div class="brand-icon">🎬</div>
-            <h1>VK Watch Party</h1>
-            <div class="muted">Смотрите видео вместе, где бы вы ни были</div>
-        </header>
-        <section class="card">
-            <h2>Создайте свою комнату</h2>
-            <p>Оператор выбирает видео и управляет общим воспроизведением.</p>
-            <button id="createRoomButton" class="wide">🎬 Создать комнату</button>
-        </section>
-        <section class="card">
-            <h2>Присоединиться к друзьям</h2>
-            <p>Введите код комнаты или вставьте пригласительную ссылку.</p>
-            <div class="join-row">
-                <input id="roomCodeInput" autocomplete="off" placeholder="Введите код или ссылку комнаты">
-                <button id="joinRoomButton">🚀 Подключиться</button>
-            </div>
-        </section>
+        <header class="brand"><div class="brand-icon">🎬</div><h1>VK Watch Party</h1><div class="muted">Смотрите видео вместе, где бы вы ни были</div></header>
+        <section class="card"><h2>Создайте свою комнату</h2><p>Оператор выбирает видео и управляет общим воспроизведением.</p><button id="createRoomButton" class="wide">🎬 Создать комнату</button></section>
+        <section class="card"><h2>Присоединиться к друзьям</h2><p>Введите код комнаты или вставьте пригласительную ссылку.</p><div class="join-row"><input id="roomCodeInput" autocomplete="off" placeholder="Введите код или ссылку комнаты"><button id="joinRoomButton">🚀 Подключиться</button></div></section>
         <div id="lobbyStatus" class="status" role="status"></div>
     </main>
 
     <main id="screenRoom" class="screen hidden">
-        <header class="room-header">
-            <div id="roomCodeLabel" class="room-code"></div>
-            <span id="roleBadge" class="role-badge"></span>
-            <button id="inviteButton" class="secondary">🔗 Пригласить</button>
-            <button id="leaveButton" class="secondary">🚪 Выйти</button>
-        </header>
-
-        <section id="operatorPanel" class="hidden">
-            <div class="operator-controls">
-                <input id="videoUrlInput" type="url" placeholder="Ссылка на видео ВКонтакте">
-                <button id="loadVideoButton">Загрузить</button>
-            </div>
-        </section>
-
-        <div id="videoShell">
-            <video id="player" controls playsinline></video>
-            <button id="enableSoundButton" type="button">🔊 Включить звук</button>
-        </div>
-        <div id="viewerActions" class="viewer-actions hidden">
-            <button id="goLiveButton" class="secondary">🔄 В прямой эфир</button>
-        </div>
+        <header class="room-header"><div id="roomCodeLabel" class="room-code"></div><span id="roleBadge" class="role-badge"></span><button id="inviteButton" class="secondary">🔗 Пригласить</button><button id="leaveButton" class="secondary">🚪 Выйти</button></header>
+        <section id="operatorPanel" class="hidden"><div class="operator-controls"><input id="videoUrlInput" type="url" placeholder="Ссылка на видео ВКонтакте"><button id="loadVideoButton">Загрузить</button></div></section>
+        <div id="videoShell"><video id="player" controls playsinline></video><button id="enableSoundButton" type="button">🔊 Включить звук</button></div>
+        <div id="viewerActions" class="viewer-actions hidden"><button id="goLiveButton" class="secondary">🔄 В прямой эфир</button></div>
         <div id="roomStatus" class="status" role="status">Подключаемся к комнате...</div>
-        <details>
-            <summary>Отладочный лог</summary>
-            <pre id="debugLog" aria-live="polite">Лог пуст.</pre>
-        </details>
+        <details><summary>Отладочный лог</summary><pre id="debugLog" aria-live="polite">Лог пуст.</pre></details>
     </main>
 
     <script>
         const tg = window.Telegram?.WebApp;
         tg?.expand?.();
         const $ = id => document.getElementById(id);
-        const lobby = $('screenLobby');
-        const roomScreen = $('screenRoom');
-        const player = $('player');
-        const debugLog = $('debugLog');
-        const enableSoundButton = $('enableSoundButton');
         const HOST_TOKEN_PREFIX = 'vk-watch:host:';
         const ROOM_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+        const initialQueryRoom = new URLSearchParams(location.search).get('room');
+        const initialRoom = String(initialQueryRoom || tg?.initDataUnsafe?.start_param || '').trim().toUpperCase();
 
-        let roomId = null;
-        let hostToken = null;
-        let isOperator = false;
-        let ws = null;
-        let hls = null;
-        let isRemote = false;
-        let isSeeking = false;
-        let localViewerPaused = false;
-        let reconnecting = false;
+        let roomId = null, hostToken = null, isOperator = false, ws = null, hls = null;
+        let isRemote = false, isSeeking = false, localViewerPaused = false;
+
+        // Connect immediately for deep links, before media setup or other initialization.
+        if (initialRoom) {
+            roomId = initialRoom;
+            hostToken = localStorage.getItem(HOST_TOKEN_PREFIX + roomId);
+            setRoomUrl(roomId);
+            $('roomCodeLabel').textContent = `Комната ${roomId}`;
+            $('screenLobby').classList.add('hidden');
+            $('screenRoom').classList.remove('hidden');
+            openSocket();
+        }
 
         function logDebug(message, details) {
-            const timestamp = new Date().toLocaleTimeString();
+            const log = $('debugLog');
             const suffix = details === undefined ? '' : `\n${JSON.stringify(details, null, 2)}`;
-            const prefix = debugLog.textContent === 'Лог пуст.' ? '' : `${debugLog.textContent}\n\n`;
-            debugLog.textContent = `${prefix}[${timestamp}] ${message}${suffix}`;
-            debugLog.scrollTop = debugLog.scrollHeight;
+            const prefix = log.textContent === 'Лог пуст.' ? '' : `${log.textContent}\n\n`;
+            log.textContent = `${prefix}[${new Date().toLocaleTimeString()}] ${message}${suffix}`;
+            log.scrollTop = log.scrollHeight;
         }
 
         function normalizeRoomCode(value) {
-            const input = String(value || '').trim();
-            if (!input) return '';
+            const raw = String(value || '').trim();
+            if (!raw) return '';
             try {
-                const parsed = new URL(input, window.location.href);
-                const fromQuery = parsed.searchParams.get('room');
-                const fromStart = parsed.searchParams.get('startapp') || parsed.searchParams.get('start_param');
-                if (fromQuery || fromStart) return String(fromQuery || fromStart).trim().toUpperCase();
+                const parsed = new URL(raw, location.href);
+                const code = parsed.searchParams.get('room') || parsed.searchParams.get('startapp') || parsed.searchParams.get('start_param');
+                if (code) return code.trim().toUpperCase();
             } catch (_) {}
-            const match = input.match(/[?&]room=([A-Za-z0-9_-]+)/i);
-            return (match ? decodeURIComponent(match[1]) : input).trim().toUpperCase();
+            const match = raw.match(/[?&]room=([A-Za-z0-9_-]+)/i);
+            return (match ? decodeURIComponent(match[1]) : raw).trim().toUpperCase();
         }
 
         function setRoomUrl(code) {
-            const url = new URL(window.location.href);
+            const url = new URL(location.href);
             url.search = '';
             url.searchParams.set('room', code);
-            window.history.replaceState({}, '', url);
-        }
-
-        function showLobby() {
-            lobby.classList.remove('hidden');
-            roomScreen.classList.add('hidden');
-        }
-
-        function showRoom() {
-            lobby.classList.add('hidden');
-            roomScreen.classList.remove('hidden');
+            history.replaceState({}, '', url);
         }
 
         function createRoomCode() {
-            const bytes = new Uint8Array(6);
-            crypto.getRandomValues(bytes);
-            return Array.from(bytes, byte => ROOM_ALPHABET[byte % ROOM_ALPHABET.length]).join('');
+            const bytes = crypto.getRandomValues(new Uint8Array(6));
+            return Array.from(bytes, value => ROOM_ALPHABET[value % ROOM_ALPHABET.length]).join('');
         }
 
-        function getStoredHostToken(code) {
-            return localStorage.getItem(HOST_TOKEN_PREFIX + code);
+        function openSocket() {
+            const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            ws = new WebSocket(`${scheme}//${location.host}/ws/${encodeURIComponent(roomId)}`);
+            ws.onopen = () => {
+                ws.send(JSON.stringify({ type: 'auth', host_token: hostToken }));
+                $('roomStatus').textContent = 'Подключаемся к комнате...';
+            };
+            ws.onmessage = handleRoomMessage;
+            ws.onclose = () => { if (roomId) $('roomStatus').textContent = 'Соединение потеряно.'; };
+            ws.onerror = () => { if (roomId) $('roomStatus').textContent = 'Не удалось подключиться к комнате.'; };
         }
 
         function connectToRoom(code, token = null) {
             roomId = normalizeRoomCode(code);
             if (!roomId) return;
-            hostToken = token || getStoredHostToken(roomId);
+            hostToken = token || localStorage.getItem(HOST_TOKEN_PREFIX + roomId);
             setRoomUrl(roomId);
             $('roomCodeLabel').textContent = `Комната ${roomId}`;
-            showRoom();
-
-            if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
-                ws.close(1000, 'Switching room');
-            }
-            const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-            ws = new WebSocket(`${protocol}//${location.host}/ws/${encodeURIComponent(roomId)}`);
-            ws.onopen = () => {
-                ws.send(JSON.stringify({ type: 'auth', host_token: hostToken }));
-                $('roomStatus').textContent = 'Проверяем роль и подключаемся...';
-            };
-            ws.onclose = () => {
-                if (!reconnecting) $('roomStatus').textContent = 'Соединение потеряно. Нажмите «Выйти» и подключитесь снова.';
-            };
-            ws.onerror = () => $('roomStatus').textContent = 'Не удалось подключиться к комнате.';
-            ws.onmessage = handleRoomMessage;
+            $('screenLobby').classList.add('hidden');
+            $('screenRoom').classList.remove('hidden');
+            openSocket();
         }
 
         $('createRoomButton').addEventListener('click', () => {
@@ -227,201 +143,140 @@
             localStorage.setItem(HOST_TOKEN_PREFIX + code, token);
             connectToRoom(code, token);
         });
-
         $('joinRoomButton').addEventListener('click', () => {
             const code = normalizeRoomCode($('roomCodeInput').value);
-            if (!code) {
-                $('lobbyStatus').textContent = 'Введите код комнаты или пригласительную ссылку.';
-                return;
-            }
+            if (!code) { $('lobbyStatus').textContent = 'Введите код комнаты или пригласительную ссылку.'; return; }
             connectToRoom(code);
         });
-        $('roomCodeInput').addEventListener('keydown', event => {
-            if (event.key === 'Enter') $('joinRoomButton').click();
-        });
+        $('roomCodeInput').addEventListener('keydown', event => { if (event.key === 'Enter') $('joinRoomButton').click(); });
 
         async function inviteFriends() {
-            const inviteUrl = new URL(window.location.href);
-            inviteUrl.search = '';
-            inviteUrl.searchParams.set('room', roomId);
-            try {
-                await navigator.clipboard.writeText(inviteUrl.toString());
-                $('roomStatus').textContent = 'Ссылка-приглашение скопирована.';
-            } catch (_) {
-                window.prompt('Скопируйте ссылку на комнату:', inviteUrl.toString());
-            }
+            const url = new URL(location.href);
+            url.search = '';
+            url.searchParams.set('room', roomId);
+            try { await navigator.clipboard.writeText(url.toString()); $('roomStatus').textContent = 'Ссылка-приглашение скопирована.'; }
+            catch (_) { window.prompt('Скопируйте ссылку на комнату:', url.toString()); }
         }
         $('inviteButton').addEventListener('click', inviteFriends);
 
         function stopMedia() {
             if (hls) { hls.destroy(); hls = null; }
-            player.pause();
-            player.removeAttribute('src');
-            player.load();
-            enableSoundButton.style.display = 'none';
+            $('player').pause();
+            $('player').removeAttribute('src');
+            $('player').load();
+            $('enableSoundButton').style.display = 'none';
         }
 
         $('leaveButton').addEventListener('click', () => {
-            reconnecting = true;
             if (ws && ws.readyState < WebSocket.CLOSING) ws.close(1000, 'Left room');
             ws = null;
             stopMedia();
-            roomId = null;
-            hostToken = null;
-            isOperator = false;
-            localViewerPaused = false;
-            const url = new URL(window.location.href);
-            url.search = '';
-            window.history.replaceState({}, '', url);
+            roomId = null; hostToken = null; isOperator = false; localViewerPaused = false;
+            const url = new URL(location.href); url.search = ''; history.replaceState({}, '', url);
+            $('screenRoom').classList.add('hidden'); $('screenLobby').classList.remove('hidden');
             $('lobbyStatus').textContent = '';
-            showLobby();
-            reconnecting = false;
         });
 
         function makeProxyUrl(streamUrl, headers = {}) {
-            const params = new URLSearchParams({ url: streamUrl });
-            if (headers['User-Agent']) params.set('user_agent', headers['User-Agent']);
-            if (headers.Referer) params.set('referer', headers.Referer);
-            return `/api/proxy?${params}`;
+            const query = new URLSearchParams({ url: streamUrl });
+            if (headers['User-Agent']) query.set('user_agent', headers['User-Agent']);
+            if (headers.Referer) query.set('referer', headers.Referer);
+            return `/api/proxy?${query}`;
         }
 
         function requestSync() {
             if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'sync_request' }));
         }
 
-        function updatePlayerToSnapshot(snapshot, adjust = true) {
-            if (isOperator || !snapshot || (localViewerPaused && snapshot.playing)) return;
-            const serverTime = Number(snapshot.server_time);
+        function updateViewer(snapshot, force = false) {
+            if (isOperator || !snapshot) return;
             const state = snapshot.state || snapshot;
+            const serverTime = Number(snapshot.server_time);
             let target = Number(state.time ?? snapshot.time);
             if (!Number.isFinite(target)) return;
             if (state.playing && Number.isFinite(serverTime)) target += Math.max(0, Date.now() / 1000 - serverTime);
+            if (localViewerPaused && state.playing && !force) return;
 
-            if (adjust && Math.abs(player.currentTime - target) > 1.5) {
+            if (Math.abs($('player').currentTime - target) > 1.5) {
                 isRemote = true;
-                player.currentTime = Math.max(0, target);
-                setTimeout(() => { isRemote = false; }, 350);
+                $('player').currentTime = Math.max(0, target);
+                setTimeout(() => { isRemote = false; }, 300);
             }
             if (state.playing) {
-                player.play().catch(error => {
+                $('player').play().catch(error => {
                     if (error.name === 'NotAllowedError') {
-                        player.muted = true;
-                        player.play().catch(() => {});
-                        enableSoundButton.style.display = 'block';
+                        $('player').muted = true;
+                        $('player').play().catch(() => {});
+                        $('enableSoundButton').style.display = 'block';
                     }
                 });
             } else {
                 isRemote = true;
-                player.pause();
-                setTimeout(() => { isRemote = false; }, 350);
+                $('player').pause();
+                setTimeout(() => { isRemote = false; }, 300);
             }
         }
 
-        function setVideoSource(streamUrl, targetTime = 0, shouldPlay = true, isHls = false, headers = {}, initialSnapshot = null) {
+        function setVideoSource(streamUrl, startTime = 0, shouldPlay = true, isHls = false, headers = {}, initialSnapshot = null) {
             if (!streamUrl) return;
-            const startPosition = Math.max(0, Number(targetTime) || 0);
+            const player = $('player');
+            const targetTime = Math.max(0, Number(startTime) || 0);
             const proxyUrl = makeProxyUrl(streamUrl, headers);
             if (hls) { hls.destroy(); hls = null; }
-            player.removeAttribute('src');
-            player.load();
-
+            player.removeAttribute('src'); player.load();
             const useHls = Boolean(isHls || streamUrl.toLowerCase().includes('.m3u8')) && Boolean(window.Hls?.isSupported());
-            logDebug(`Выбран плеер: ${useHls ? 'Hls.js' : 'нативный <video>'}`, { startPosition, streamUrl });
+            logDebug(`Выбран плеер: ${useHls ? 'Hls.js' : 'нативный <video>'}`, { targetTime, streamUrl });
 
-            const playImmediately = () => {
+            const play = () => {
                 if (!shouldPlay) return;
                 player.play().catch(error => {
                     if (error.name === 'NotAllowedError') {
-                        player.muted = true;
-                        player.play().catch(() => {});
-                        enableSoundButton.style.display = 'block';
+                        player.muted = true; player.play().catch(() => {}); $('enableSoundButton').style.display = 'block';
                     }
                 });
             };
-
             if (useHls) {
-                hls = new Hls({ startPosition, maxBufferLength: 60, maxMaxBufferLength: 120 });
-                hls.loadSource(proxyUrl);
-                hls.attachMedia(player);
-                hls.on(Hls.Events.MANIFEST_PARSED, () => {
-                    // Start fetching/playing at the requested room time without waiting for fragment correction.
-                    isRemote = true;
-                    if (Number.isFinite(startPosition)) player.currentTime = startPosition;
-                    setTimeout(() => { isRemote = false; }, 350);
-                    playImmediately();
-                });
-                let correctedFirstFragment = false;
+                hls = new Hls({ startPosition: targetTime, maxBufferLength: 60, maxMaxBufferLength: 120 });
+                hls.loadSource(proxyUrl); hls.attachMedia(player);
+                hls.on(Hls.Events.MANIFEST_PARSED, () => { player.currentTime = targetTime; play(); });
+                let corrected = false;
                 hls.on(Hls.Events.FRAG_LOADED, () => {
-                    if (correctedFirstFragment || !initialSnapshot) return;
-                    correctedFirstFragment = true;
-                    updatePlayerToSnapshot(initialSnapshot, true);
+                    if (!corrected && initialSnapshot) { corrected = true; updateViewer(initialSnapshot, true); }
                 });
                 hls.on(Hls.Events.ERROR, (event, data) => {
-                    logDebug('Ошибка Hls.js', { type: data.type, details: data.details, fatal: data.fatal, response: data.response });
+                    logDebug('Ошибка Hls.js', { type: data.type, details: data.details, fatal: data.fatal });
                     if (data.fatal) $('roomStatus').textContent = 'Ошибка воспроизведения HLS.';
                 });
             } else {
                 player.src = proxyUrl;
-                player.onloadedmetadata = () => {
-                    isRemote = true;
-                    player.currentTime = startPosition;
-                    setTimeout(() => { isRemote = false; }, 350);
-                    playImmediately();
-                    if (initialSnapshot) updatePlayerToSnapshot(initialSnapshot, true);
-                };
-            }
-        }
-
-        async function probeProxy(proxyUrl) {
-            try {
-                const response = await fetch(proxyUrl, { headers: { Range: 'bytes=0-0' }, cache: 'no-store' });
-                logDebug('Ответ /api/proxy', { status: response.status, content_type: response.headers.get('Content-Type') });
-                await response.body?.cancel();
-            } catch (error) {
-                logDebug('Ошибка запроса /api/proxy', error.message);
+                player.onloadedmetadata = () => { player.currentTime = targetTime; play(); if (initialSnapshot) updateViewer(initialSnapshot, true); };
             }
         }
 
         function handleRoomMessage(event) {
             let msg;
-            try { msg = JSON.parse(event.data); }
-            catch (error) { logDebug('Некорректное сообщение WebSocket', error.message); return; }
-
+            try { msg = JSON.parse(event.data); } catch (error) { logDebug('WebSocket JSON parse error', error.message); return; }
             if (msg.type === 'init') {
                 isOperator = msg.role === 'operator';
                 $('roleBadge').textContent = isOperator ? '👑 Оператор' : '👀 Зритель';
                 $('operatorPanel').classList.toggle('hidden', !isOperator);
                 $('viewerActions').classList.toggle('hidden', isOperator);
                 $('roomStatus').textContent = `Комната подключена как ${isOperator ? 'Оператор' : 'Зритель'}.`;
-                const snapshot = { state: msg.state, server_time: msg.server_time };
                 if (msg.state?.stream_url) {
                     const elapsed = msg.state.playing ? Math.max(0, Date.now() / 1000 - Number(msg.server_time)) : 0;
                     const target = Number(msg.state.time) + elapsed;
-                    setVideoSource(msg.state.stream_url, target, msg.state.playing, msg.state.is_hls, msg.state.http_headers || {}, snapshot);
-                    probeProxy(makeProxyUrl(msg.state.stream_url, msg.state.http_headers || {}));
+                    setVideoSource(msg.state.stream_url, target, msg.state.playing, msg.state.is_hls, msg.state.http_headers || {}, { state: msg.state, server_time: msg.server_time });
                 }
                 return;
             }
-            if (msg.type === 'sync') {
-                if (!isOperator) updatePlayerToSnapshot(msg);
-                return;
-            }
-            if (msg.type === 'load') {
-                $('roomStatus').textContent = `Загружено: ${msg.title || 'Видео'}`;
-                localViewerPaused = false;
-                setVideoSource(msg.stream_url, 0, true, msg.is_hls, msg.http_headers || {});
-                return;
-            }
+            if (msg.type === 'sync') { updateViewer(msg); return; }
             if (isOperator) return;
-            if (msg.type === 'play') {
+            if (msg.type === 'load') {
                 localViewerPaused = false;
-                updatePlayerToSnapshot({ state: { time: msg.time, playing: true }, server_time: Date.now() / 1000 });
-            } else if (msg.type === 'pause') {
-                updatePlayerToSnapshot({ state: { time: msg.time, playing: false }, server_time: Date.now() / 1000 });
-            } else if (msg.type === 'seek') {
-                isRemote = true;
-                player.currentTime = Number(msg.time) || 0;
-                setTimeout(() => { isRemote = false; }, 350);
+                const elapsed = msg.state?.playing ? Math.max(0, Date.now() / 1000 - Number(msg.server_time)) : 0;
+                setVideoSource(msg.state.stream_url, Number(msg.state.time) + elapsed, msg.state.playing, msg.state.is_hls, msg.state.http_headers || {}, { state: msg.state, server_time: msg.server_time });
+            } else if (msg.type === 'play' || msg.type === 'pause' || msg.type === 'seek') {
+                updateViewer(msg, true);
             }
         }
 
@@ -429,69 +284,42 @@
             if (!isOperator) return;
             const url = $('videoUrlInput').value.trim();
             if (!url) return;
-            const button = $('loadVideoButton');
-            button.disabled = true;
-            $('roomStatus').textContent = 'Извлекаем видео...';
+            const button = $('loadVideoButton'); button.disabled = true; $('roomStatus').textContent = 'Извлекаем видео...';
             try {
                 const response = await fetch(`/api/extract?url=${encodeURIComponent(url)}`);
                 const data = await response.json();
-                logDebug('Полный ответ /api/extract', data);
+                logDebug('Ответ /api/extract', data);
                 if (!response.ok) throw new Error(data.detail || 'Ошибка извлечения');
-                $('roomStatus').textContent = `Загружено: ${data.title}`;
-                setVideoSource(data.stream_url, 0, true, data.is_hls, data.http_headers || {});
-                if (ws?.readyState === WebSocket.OPEN) {
-                    ws.send(JSON.stringify({ type: 'load', vk_url: url, stream_url: data.stream_url, is_hls: data.is_hls, http_headers: data.http_headers, title: data.title }));
-                }
-            } catch (error) {
-                $('roomStatus').textContent = `Ошибка: ${error.message}`;
-                logDebug('Ошибка извлечения', error.message);
-            } finally {
-                button.disabled = false;
-            }
+                if (ws?.readyState !== WebSocket.OPEN) throw new Error('Соединение с комнатой не готово');
+                ws.send(JSON.stringify({ type: 'load', vk_url: url, stream_url: data.stream_url, is_hls: data.is_hls, http_headers: data.http_headers, title: data.title }));
+            } catch (error) { $('roomStatus').textContent = `Ошибка: ${error.message}`; }
+            finally { button.disabled = false; }
         });
 
-        player.addEventListener('seeking', () => { isSeeking = true; });
-        player.addEventListener('seeked', () => {
+        $('player').addEventListener('seeking', () => { isSeeking = true; });
+        $('player').addEventListener('seeked', () => {
             setTimeout(() => { isSeeking = false; }, 120);
-            if (isOperator && !isRemote && ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'seek', time: player.currentTime }));
+            if (isOperator && !isRemote && ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'seek', time: $('player').currentTime }));
         });
-        player.addEventListener('play', () => {
-            if (isOperator && !isRemote && ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'play', time: player.currentTime }));
-            else if (!isOperator && !isRemote) {
-                localViewerPaused = false;
-                requestSync();
-            }
+        $('player').addEventListener('play', () => {
+            if (isOperator && !isRemote && ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'play', time: $('player').currentTime }));
+            else if (!isOperator && !isRemote) { localViewerPaused = false; requestSync(); }
         });
-        player.addEventListener('pause', () => {
-            if (isOperator && !isRemote && ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'pause', time: player.currentTime }));
-            else if (!isOperator && !isRemote && !player.ended) localViewerPaused = true;
+        $('player').addEventListener('pause', () => {
+            if (isOperator && !isRemote && ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'pause', time: $('player').currentTime }));
+            else if (!isOperator && !isRemote && !$('player').ended) localViewerPaused = true;
         });
 
-        $('goLiveButton').addEventListener('click', () => {
-            localViewerPaused = false;
-            requestSync();
-        });
+        $('goLiveButton').addEventListener('click', () => { localViewerPaused = false; requestSync(); });
         $('enableSoundButton').addEventListener('click', async () => {
-            player.muted = false;
-            try {
-                await player.play();
-                enableSoundButton.style.display = 'none';
-            } catch (error) {
-                logDebug('Не удалось включить звук', error.message);
-            }
+            $('player').muted = false;
+            try { await $('player').play(); $('enableSoundButton').style.display = 'none'; } catch (error) { logDebug('Не удалось включить звук', error.message); }
             requestSync();
         });
+        $('player').addEventListener('error', () => logDebug('Ошибка элемента video', { code: $('player').error?.code, message: $('player').error?.message }));
+        setInterval(() => { if (!isSeeking && !$('player').paused && !localViewerPaused) requestSync(); }, 5000);
 
-        setInterval(() => {
-            if (!isSeeking && !player.paused && !localViewerPaused && ws?.readyState === WebSocket.OPEN) requestSync();
-        }, 5000);
-
-        // Deep links (including Telegram Mini App start_param) go directly to the room.
-        const initialUrlRoom = new URLSearchParams(location.search).get('room');
-        const telegramStartParam = tg?.initDataUnsafe?.start_param;
-        const initialRoom = normalizeRoomCode(initialUrlRoom || telegramStartParam);
-        if (initialRoom) connectToRoom(initialRoom);
-        else showLobby();
+        window.addEventListener('beforeunload', () => { if (ws && ws.readyState < WebSocket.CLOSING) ws.close(); });
     </script>
 </body>
 </html>

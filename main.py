@@ -29,7 +29,7 @@ app = FastAPI(lifespan=lifespan)
 rooms: Dict[str, dict] = {}
 
 
-def get_room(room_id: str):
+def get_room(room_id: str) -> dict:
     if room_id not in rooms:
         rooms[room_id] = {
             "connections": set(),
@@ -47,10 +47,10 @@ def get_room(room_id: str):
     return rooms[room_id]
 
 
-def room_snapshot(room: dict):
+def room_snapshot(room: dict) -> dict:
     now = time.time()
     state = room["state"]
-    current_time = state["time"]
+    current_time = float(state["time"])
     if state["playing"]:
         current_time += max(0.0, now - state["updated_at"])
     return {
@@ -84,42 +84,35 @@ def proxy_url(url: str, user_agent: str, referer: str) -> str:
 
 
 def is_media_segment(url: str) -> bool:
-    path = urlparse(url).path.lower()
-    return path.endswith((".ts", ".m4s", ".mp4", ".aac", ".vtt"))
+    return urlparse(url).path.lower().endswith((".ts", ".m4s", ".mp4", ".aac", ".vtt"))
 
 
 def rewrite_m3u8_playlist(text: str, playlist_url: str, user_agent: str, referer: str) -> str:
-    """Proxy child playlists/keys; keep media segment URLs absolute and CDN-direct."""
+    """Use the proxy for child playlists and keys, but leave media segment URLs CDN-direct."""
     import re
 
-    rewritten_lines = []
+    lines = []
     for line in text.splitlines():
         stripped = line.strip()
         if not stripped:
-            rewritten_lines.append(line)
-            continue
-        if stripped.startswith("#"):
+            lines.append(line)
+        elif stripped.startswith("#"):
             def replace_uri(match):
                 source_uri = match.group(1)
                 if source_uri.lower().startswith("data:"):
                     return match.group(0)
                 absolute_uri = urljoin(playlist_url, source_uri)
-                if is_media_segment(absolute_uri):
-                    replacement = absolute_uri
-                else:
-                    replacement = proxy_url(absolute_uri, user_agent, referer)
-                return f'URI="{replacement}"'
+                target = absolute_uri if is_media_segment(absolute_uri) else proxy_url(absolute_uri, user_agent, referer)
+                return f'URI="{target}"'
 
-            rewritten_lines.append(re.sub(r'URI="([^"]+)"', replace_uri, stripped, flags=re.IGNORECASE))
-            continue
-
-        absolute_uri = urljoin(playlist_url, stripped)
-        if urlparse(absolute_uri).path.lower().endswith(".m3u8"):
-            rewritten_lines.append(proxy_url(absolute_uri, user_agent, referer))
+            lines.append(re.sub(r'URI="([^"]+)"', replace_uri, stripped, flags=re.IGNORECASE))
         else:
-            rewritten_lines.append(absolute_uri)
-
-    return "\n".join(rewritten_lines) + ("\n" if text.endswith("\n") else "")
+            absolute_uri = urljoin(playlist_url, stripped)
+            if urlparse(absolute_uri).path.lower().endswith(".m3u8"):
+                lines.append(proxy_url(absolute_uri, user_agent, referer))
+            else:
+                lines.append(absolute_uri)
+    return "\n".join(lines) + ("\n" if text.endswith("\n") else "")
 
 
 def stream_request_headers(user_agent: str, referer: str, request: Request) -> dict:
@@ -148,14 +141,13 @@ async def extract_vk(url: str):
         stream_url = info.get("url")
         if not stream_url:
             raise ValueError("Не удалось получить поток")
-
         ext = str(info.get("ext", "")).lower()
         protocol = str(info.get("protocol", "")).lower()
         is_hls = ext == "m3u8" or "m3u8" in protocol or ".m3u8" in stream_url.lower()
-        extracted_headers = info.get("http_headers") or {}
-        proxy_headers = {
-            "User-Agent": extracted_headers.get("User-Agent") or "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-            "Referer": extracted_headers.get("Referer") or "https://vkvideo.ru/",
+        extracted = info.get("http_headers") or {}
+        headers = {
+            "User-Agent": extracted.get("User-Agent") or "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+            "Referer": extracted.get("Referer") or "https://vkvideo.ru/",
         }
         validate_public_url(stream_url)
         return {
@@ -164,7 +156,7 @@ async def extract_vk(url: str):
             "is_hls": is_hls,
             "ext": ext,
             "protocol": protocol,
-            "http_headers": proxy_headers,
+            "http_headers": headers,
         }
     except HTTPException:
         raise
@@ -184,6 +176,7 @@ async def proxy_video(
     client: httpx.AsyncClient = request.app.state.http_client
     try:
         response = await client.send(client.build_request("GET", url, headers=headers), stream=True)
+        # Validate every redirect target to prevent proxy redirects from bypassing SSRF checks.
         for _ in range(5):
             if not response.is_redirect:
                 break
@@ -198,7 +191,6 @@ async def proxy_video(
         else:
             await response.aclose()
             raise HTTPException(status_code=502, detail="Слишком много перенаправлений потока")
-
         if response.is_redirect:
             await response.aclose()
             raise HTTPException(status_code=502, detail="Слишком много перенаправлений потока")
@@ -218,14 +210,12 @@ async def proxy_video(
                 content=playlist,
                 status_code=upstream_status,
                 media_type="application/vnd.apple.mpegurl",
-                headers={"Cache-Control": "no-store", "X-Proxy-Upstream-Status": str(upstream_status), "X-Proxy-Upstream-Content-Type": content_type},
+                headers={"Cache-Control": "no-store"},
             )
 
         response_headers = {
             "Content-Type": content_type,
             "Accept-Ranges": response.headers.get("Accept-Ranges", "bytes"),
-            "X-Proxy-Upstream-Status": str(upstream_status),
-            "X-Proxy-Upstream-Content-Type": content_type,
         }
         for header in ("Content-Length", "Content-Range"):
             if value := response.headers.get(header):
@@ -250,68 +240,70 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str):
     await websocket.accept()
     room = get_room(room_id)
 
-    # The first frame authenticates the operator; a room can only claim its token once.
+    # The first WebSocket frame authenticates the operator. Rooms retain their
+    # token after everyone disconnects so a later guest cannot claim the role.
     try:
-        auth_msg = json.loads(await websocket.receive_text())
+        auth_message = json.loads(await websocket.receive_text())
     except (WebSocketDisconnect, json.JSONDecodeError):
         return
-    supplied_token = auth_msg.get("host_token") if auth_msg.get("type") == "auth" else None
+    supplied_token = auth_message.get("host_token") if auth_message.get("type") == "auth" else None
     if room["host_token"] is None and isinstance(supplied_token, str) and supplied_token:
         room["host_token"] = supplied_token
-    is_host = bool(supplied_token and supplied_token == room["host_token"])
+    is_operator = bool(supplied_token and supplied_token == room["host_token"])
     room["connections"].add(websocket)
 
     snapshot = room_snapshot(room)
     await websocket.send_text(json.dumps({
         "type": "init",
         **snapshot,
-        "role": "operator" if is_host else "viewer",
+        "role": "operator" if is_operator else "viewer",
     }))
 
     try:
         while True:
             data = await websocket.receive_text()
             try:
-                msg = json.loads(data)
+                message = json.loads(data)
             except json.JSONDecodeError:
                 continue
-            msg_type = msg.get("type")
+            message_type = message.get("type")
 
-            if msg_type == "sync_request":
-                snapshot = room_snapshot(room)
-                await websocket.send_text(json.dumps({"type": "sync", **snapshot}))
+            if message_type == "sync_request":
+                await websocket.send_text(json.dumps({"type": "sync", **room_snapshot(room)}))
+                continue
+            if message_type not in ("load", "play", "pause", "seek") or not is_operator:
                 continue
 
-            if msg_type not in ("load", "play", "pause", "seek") or not is_host:
-                continue
-
-            now = time.time()
             state = room["state"]
-            if msg_type == "load":
+            now = time.time()
+            if message_type == "load":
                 state.update({
-                    "vk_url": msg.get("vk_url", ""),
-                    "stream_url": msg.get("stream_url", ""),
-                    "is_hls": bool(msg.get("is_hls", False)),
-                    "http_headers": msg.get("http_headers") or {},
+                    "vk_url": message.get("vk_url", ""),
+                    "stream_url": message.get("stream_url", ""),
+                    "is_hls": bool(message.get("is_hls", False)),
+                    "http_headers": message.get("http_headers") or {},
                     "time": 0.0,
                     "playing": True,
                     "updated_at": now,
                 })
             else:
                 try:
-                    event_time = max(0.0, float(msg.get("time", state["time"])))
+                    current_time = max(0.0, float(message.get("time", state["time"])))
                 except (TypeError, ValueError):
-                    event_time = state["time"]
-                state["time"] = event_time
-                state["playing"] = msg_type == "play"
+                    current_time = float(state["time"])
+                state["time"] = current_time
+                state["playing"] = message_type == "play"
                 state["updated_at"] = now
 
+            # Broadcast an authoritative timestamped snapshot rather than the
+            # client's stale action timestamp, so clients account for transit time.
+            event = {"type": message_type, **room_snapshot(room)}
             disconnected = []
-            for connection in room["connections"]:
+            for connection in tuple(room["connections"]):
                 if connection is websocket:
                     continue
                 try:
-                    await connection.send_text(data)
+                    await connection.send_text(json.dumps(event))
                 except Exception:
                     disconnected.append(connection)
             for connection in disconnected:
@@ -320,5 +312,3 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str):
         pass
     finally:
         room["connections"].discard(websocket)
-        if not room["connections"]:
-            rooms.pop(room_id, None)
