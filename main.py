@@ -340,6 +340,9 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str):
     finally:
         room["connections"].discard(websocket)
         room["participants"].pop(id(websocket), None)
+        if not room["connections"]:
+            rooms.pop(room_id, None)
+            return
         event = {
             "type": "room_state",
             "state": get_room_state(room),
