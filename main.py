@@ -2,6 +2,7 @@ import ipaddress
 import json
 import socket
 import time
+import asyncio
 from contextlib import asynccontextmanager
 from typing import Dict
 from urllib.parse import urlencode, urljoin, urlparse
@@ -27,6 +28,9 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 rooms: Dict[str, dict] = {}
+extraction_cache: Dict[str, tuple[dict, float]] = {}
+extraction_locks: Dict[str, asyncio.Lock] = {}
+playlist_cache: Dict[str, tuple[str, float]] = {}
 
 
 def get_room(room_id: str) -> dict:
@@ -138,27 +142,57 @@ async def index():
         return file.read()
 
 
+@app.get("/api/health")
+async def health():
+    return {"ok": True}
+
+
 @app.get("/api/extract")
 async def extract_vk(url: str):
-    ydl_opts = {
-        "format": "best[height<=720]/best",
-        "quiet": True,
-        "no_warnings": True,
-        "socket_timeout": 30,
-        "retries": 3,
-        "fragment_retries": 3,
-        "noprogress": True,
-        "http_headers": {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-            "Referer": "https://vkvideo.ru/",
-        },
-    }
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
+    cached = extraction_cache.get(url)
+    if cached:
+        result, expires_at = cached
+        if expires_at > time.time():
+            return result.copy()
+        extraction_cache.pop(url, None)
+
+    lock = extraction_locks.setdefault(url, asyncio.Lock())
+    async with lock:
+        cached = extraction_cache.get(url)
+        if cached:
+            result, expires_at = cached
+            if expires_at > time.time():
+                return result.copy()
+            extraction_cache.pop(url, None)
+
+        def extract():
+            ydl_opts = {
+                "format": "best[height<=720]/best",
+                "quiet": True,
+                "no_warnings": True,
+                "socket_timeout": 30,
+                "retries": 3,
+                "fragment_retries": 3,
+                "noprogress": True,
+                "http_headers": {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+                    "Referer": "https://vkvideo.ru/",
+                },
+            }
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                return ydl.extract_info(url, download=False)
+
+        try:
+            info = await asyncio.to_thread(extract)
+        except Exception as error:
+            message = str(error)
+            if "No address associated with hostname" in message or "Connection" in message or "TransportError" in message:
+                raise HTTPException(status_code=502, detail=f"Сервис видео временно недоступен: {message}")
+            raise HTTPException(status_code=400, detail=message)
+
         stream_url = info.get("url")
         if not stream_url:
-            raise ValueError("Не удалось получить поток")
+            raise HTTPException(status_code=400, detail="Не удалось получить поток")
         ext = str(info.get("ext", "")).lower()
         protocol = str(info.get("protocol", "")).lower()
         is_hls = ext == "m3u8" or "m3u8" in protocol or ".m3u8" in stream_url.lower()
@@ -168,7 +202,7 @@ async def extract_vk(url: str):
             "Referer": extracted.get("Referer") or "https://vkvideo.ru/",
         }
         validate_public_url(stream_url)
-        return {
+        result = {
             "stream_url": stream_url,
             "title": info.get("title", "Видео ВК"),
             "is_hls": is_hls,
@@ -176,13 +210,8 @@ async def extract_vk(url: str):
             "protocol": protocol,
             "http_headers": headers,
         }
-    except HTTPException:
-        raise
-    except Exception as error:
-        message = str(error)
-        if "No address associated with hostname" in message or "Connection" in message or "TransportError" in message:
-            raise HTTPException(status_code=502, detail=f"Сервис видео временно недоступен: {message}")
-        raise HTTPException(status_code=400, detail=message)
+        extraction_cache[url] = (result, time.time() + 30 * 60)
+        return result
 
 
 @app.get("/api/proxy")
@@ -193,6 +222,18 @@ async def proxy_video(
     referer: str = "https://vkvideo.ru/",
 ):
     validate_public_url(url)
+    playlist_key = f"{url}|{user_agent}|{referer}"
+    if ".m3u8" in url.lower():
+        cached_playlist = playlist_cache.get(playlist_key)
+        if cached_playlist:
+            body, expires_at = cached_playlist
+            if expires_at > time.time():
+                return Response(
+                    content=body,
+                    media_type="application/vnd.apple.mpegurl",
+                    headers={"Cache-Control": "public, max-age=2"},
+                )
+            playlist_cache.pop(playlist_key, None)
     headers = stream_request_headers(user_agent, referer, request)
     client: httpx.AsyncClient = request.app.state.http_client
     try:
@@ -226,7 +267,8 @@ async def proxy_video(
             body = await response.aread()
             await response.aclose()
             playlist = rewrite_m3u8_playlist(body.decode("utf-8", errors="replace"), url, user_agent, referer)
-            return Response(content=playlist, status_code=upstream_status, media_type="application/vnd.apple.mpegurl", headers={"Cache-Control": "no-store"})
+            playlist_cache[playlist_key] = (playlist, time.time() + 2)
+            return Response(content=playlist, status_code=upstream_status, media_type="application/vnd.apple.mpegurl", headers={"Cache-Control": "public, max-age=2"})
 
         response_headers = {
             "Content-Type": content_type,
