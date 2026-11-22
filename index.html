@@ -396,6 +396,18 @@
                 syncToStream(latestStreamSnapshot.state, latestStreamSnapshot.server_time);
             }
         }, 500);
+        setInterval(() => {
+            if (isOperator && ws?.readyState === WebSocket.OPEN) {
+                const player = $('player');
+                if (player.readyState >= HTMLMediaElement.HAVE_METADATA) {
+                    ws.send(JSON.stringify({
+                        type: 'operator_heartbeat',
+                        time: player.currentTime,
+                        playing: !player.paused,
+                    }));
+                }
+            }
+        }, 500);
 
         $('leaveButton').addEventListener('click', () => {
             if (ws && ws.readyState < WebSocket.CLOSING) ws.close(1000, 'Left room');
