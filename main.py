@@ -33,6 +33,7 @@ def get_room(room_id: str) -> dict:
     if room_id not in rooms:
         rooms[room_id] = {
             "connections": set(),
+            "participants": {},
             "host_token": None,
             "state": {
                 "vk_url": "",
@@ -65,6 +66,15 @@ def get_room_state(room: dict) -> dict:
         "actual_time": actual_time,
         "time": actual_time,
     }
+
+
+def get_room_participants(room: dict) -> list:
+    names = []
+    for connection in tuple(room["connections"]):
+        nickname = room["participants"].get(id(connection), "Гость")
+        if nickname not in names:
+            names.append(nickname)
+    return sorted(names)
 
 
 def validate_public_url(url: str) -> None:
@@ -243,7 +253,11 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str):
     if room["host_token"] is None and isinstance(supplied_token, str) and supplied_token:
         room["host_token"] = supplied_token
     is_operator = bool(supplied_token and supplied_token == room["host_token"])
+    nickname = str(auth_message.get("nickname", "")).strip().replace("\n", " ").replace("\r", " ")[:24]
+    if not nickname:
+        nickname = "Гость"
     room["connections"].add(websocket)
+    room["participants"][id(websocket)] = nickname
 
     now = time.time()
     await websocket.send_text(json.dumps({
@@ -251,6 +265,8 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str):
         "state": get_room_state(room),
         "server_time": now,
         "role": "operator" if is_operator else "viewer",
+        "nickname": nickname,
+        "participants": get_room_participants(room),
     }))
 
     try:
@@ -266,6 +282,7 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str):
                     "type": "room_state",
                     "state": get_room_state(room),
                     "server_time": time.time(),
+                    "participants": get_room_participants(room),
                 }))
                 continue
             if message_type not in ("load", "play", "pause", "seek") or not is_operator:
@@ -300,6 +317,7 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str):
                 "type": "room_state",
                 "state": get_room_state(room),
                 "server_time": time.time(),
+                "participants": get_room_participants(room),
             }
             disconnected = []
             for connection in tuple(room["connections"]):
@@ -313,3 +331,15 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str):
         pass
     finally:
         room["connections"].discard(websocket)
+        room["participants"].pop(id(websocket), None)
+        event = {
+            "type": "room_state",
+            "state": get_room_state(room),
+            "server_time": time.time(),
+            "participants": get_room_participants(room),
+        }
+        for connection in tuple(room["connections"]):
+            try:
+                await connection.send_text(json.dumps(event))
+            except Exception:
+                room["connections"].discard(connection)
