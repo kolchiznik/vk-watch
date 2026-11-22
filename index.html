@@ -135,7 +135,7 @@
         function syncToStream(state, serverTime) {
             if (!state) return;
             const player = $('player');
-            if (isRemote || isSeeking || player.seeking) return;
+            if (isRemote) return;
             if (!player.currentSrc || player.readyState < HTMLMediaElement.HAVE_METADATA) {
                 if (state.playing === false) player.pause();
                 return;
@@ -407,7 +407,7 @@
                     }));
                 }
             }
-        }, 500);
+        }, 1000);
 
         $('leaveButton').addEventListener('click', () => {
             if (ws && ws.readyState < WebSocket.CLOSING) ws.close(1000, 'Left room');
