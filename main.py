@@ -88,7 +88,7 @@ def is_media_segment(url: str) -> bool:
 
 
 def rewrite_m3u8_playlist(text: str, playlist_url: str, user_agent: str, referer: str) -> str:
-    """Use the proxy for child playlists and keys, but leave media segment URLs CDN-direct."""
+    """Proxy child playlists and keys, but leave media segment URLs CDN-direct."""
     import re
 
     lines = []
@@ -176,7 +176,6 @@ async def proxy_video(
     client: httpx.AsyncClient = request.app.state.http_client
     try:
         response = await client.send(client.build_request("GET", url, headers=headers), stream=True)
-        # Validate every redirect target to prevent proxy redirects from bypassing SSRF checks.
         for _ in range(5):
             if not response.is_redirect:
                 break
@@ -206,12 +205,7 @@ async def proxy_video(
             body = await response.aread()
             await response.aclose()
             playlist = rewrite_m3u8_playlist(body.decode("utf-8", errors="replace"), url, user_agent, referer)
-            return Response(
-                content=playlist,
-                status_code=upstream_status,
-                media_type="application/vnd.apple.mpegurl",
-                headers={"Cache-Control": "no-store"},
-            )
+            return Response(content=playlist, status_code=upstream_status, media_type="application/vnd.apple.mpegurl", headers={"Cache-Control": "no-store"})
 
         response_headers = {
             "Content-Type": content_type,
@@ -240,8 +234,7 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str):
     await websocket.accept()
     room = get_room(room_id)
 
-    # The first WebSocket frame authenticates the operator. Rooms retain their
-    # token after everyone disconnects so a later guest cannot claim the role.
+    # The first client frame is auth; claim the token once and retain it with room state.
     try:
         auth_message = json.loads(await websocket.receive_text())
     except (WebSocketDisconnect, json.JSONDecodeError):
@@ -252,10 +245,9 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str):
     is_operator = bool(supplied_token and supplied_token == room["host_token"])
     room["connections"].add(websocket)
 
-    snapshot = room_snapshot(room)
     await websocket.send_text(json.dumps({
         "type": "init",
-        **snapshot,
+        **room_snapshot(room),
         "role": "operator" if is_operator else "viewer",
     }))
 
@@ -267,7 +259,6 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str):
             except json.JSONDecodeError:
                 continue
             message_type = message.get("type")
-
             if message_type == "sync_request":
                 await websocket.send_text(json.dumps({"type": "sync", **room_snapshot(room)}))
                 continue
@@ -295,8 +286,6 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str):
                 state["playing"] = message_type == "play"
                 state["updated_at"] = now
 
-            # Broadcast an authoritative timestamped snapshot rather than the
-            # client's stale action timestamp, so clients account for transit time.
             event = {"type": message_type, **room_snapshot(room)}
             disconnected = []
             for connection in tuple(room["connections"]):
