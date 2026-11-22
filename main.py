@@ -285,7 +285,7 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str):
                     "participants": get_room_participants(room),
                 }))
                 continue
-            if message_type not in ("load", "play", "pause", "seek") or not is_operator:
+            if message_type not in ("load", "play", "pause", "seek", "operator_heartbeat") or not is_operator:
                 continue
 
             state = room["state"]
@@ -300,6 +300,14 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str):
                     "playing": True,
                     "anchor_timestamp": now,
                 })
+            elif message_type == "operator_heartbeat":
+                try:
+                    current_time = max(0.0, float(message.get("time", state["anchor_time"])))
+                except (TypeError, ValueError):
+                    current_time = float(state["anchor_time"])
+                state["anchor_time"] = current_time
+                state["anchor_timestamp"] = now
+                state["playing"] = bool(message.get("playing", state["playing"]))
             else:
                 try:
                     current_time = max(0.0, float(message.get("time", state["anchor_time"])))
