@@ -156,8 +156,10 @@
 
             if (state.playing === false) {
                 if (Math.abs(player.currentTime - targetTime) > 0.05) player.currentTime = targetTime;
+                isRemote = true;
                 player.playbackRate = 1;
                 player.pause();
+                setTimeout(() => { isRemote = false; }, 350);
                 return;
             }
 
