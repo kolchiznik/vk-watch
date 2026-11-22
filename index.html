@@ -111,6 +111,27 @@
             if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'sync_request' }));
         }
 
+        function formatStreamTime(seconds) {
+            const total = Math.max(0, Math.floor(Number(seconds) || 0));
+            const hours = Math.floor(total / 3600);
+            const minutes = Math.floor((total % 3600) / 60);
+            const secs = total % 60;
+            return hours > 0
+                ? `${hours}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`
+                : `${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+        }
+
+        function updateRoomStatus(state, serverTime) {
+            if (!state?.stream_url) return;
+            let actualTime = Number(state.actual_time ?? state.time);
+            if (state.playing && Number.isFinite(Number(serverTime))) {
+                actualTime += Math.max(0, Date.now() / 1000 - Number(serverTime));
+            }
+            $('roomStatus').textContent = state.playing
+                ? `▶ Воспроизведение • ${formatStreamTime(actualTime)}`
+                : `⏸ На паузе • ${formatStreamTime(actualTime)}`;
+        }
+
         function syncToStream(state, serverTime) {
             if (!state) return;
             const player = $('player');
@@ -299,6 +320,7 @@
                 logDebug('Получено состояние комнаты', { has_stream_url: Boolean(state.stream_url), playing: state.playing, actual_time: state.actual_time, state });
 
                 if (state.stream_url) {
+                    updateRoomStatus(state, msg.server_time);
                     let target = Number(state.actual_time);
                     if (state.playing && Number.isFinite(Number(msg.server_time))) {
                         target += Math.max(0, Date.now() / 1000 - Number(msg.server_time));
@@ -330,6 +352,7 @@
                 // The sender is excluded from server broadcasts, so load it locally too.
                 setVideoSource(data.stream_url, 0, true, data.is_hls, data.http_headers || {});
                 ws.send(JSON.stringify({ type: 'load', vk_url: url, stream_url: data.stream_url, is_hls: data.is_hls, http_headers: data.http_headers, title: data.title }));
+                $('roomStatus').textContent = '▶ Видео загружено • воспроизведение запущено';
             } catch (error) { $('roomStatus').textContent = `Ошибка: ${error.message}`; logDebug('Ошибка загрузки видео', error.message); }
             finally { button.disabled = false; }
         });
