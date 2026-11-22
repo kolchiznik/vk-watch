@@ -36,8 +36,6 @@
         video { display: block; width: 100%; max-height: 70vh; border-radius: 14px; background: #000; }
         .viewer-actions { display: flex; gap: 8px; margin-top: 10px; }
         .status { min-height: 20px; color: #aaa; font-size: 13px; margin-top: 12px; }
-        details { margin-top: 18px; color: #aaa; }
-        #debugLog { max-height: 240px; overflow: auto; padding: 10px; background: #101010; color: #c9e6ff; border: 1px solid #444; border-radius: 8px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
         @media (max-width: 520px) { body { padding: 12px; } .room-header { gap: 7px; } .room-code { width: 100%; } .join-row { flex-direction: column; } }
     </style>
 </head>
@@ -47,7 +45,6 @@
         <section class="card"><h2>Представьтесь</h2><p>Ник будет виден другим участникам комнаты.</p><input id="nicknameInput" maxlength="24" autocomplete="nickname" placeholder="Ваш ник"></section>
         <section class="card"><h2>Создайте свою комнату</h2><p>Оператор выбирает видео и управляет общим воспроизведением.</p><button id="createRoomButton" class="wide">🎬 Создать комнату</button></section>
         <section class="card"><h2>Присоединиться к друзьям</h2><p>Введите код комнаты или вставьте пригласительную ссылку.</p><div class="join-row"><input id="roomCodeInput" autocomplete="off" placeholder="Введите код или ссылку комнаты"><button id="joinRoomButton">🚀 Подключиться</button></div></section>
-        <div id="lobbyStatus" class="status" role="status"></div>
     </main>
 
     <main id="screenRoom" class="screen hidden">
@@ -55,14 +52,20 @@
         <section id="operatorPanel" class="hidden"><div class="operator-controls"><input id="videoUrlInput" type="url" placeholder="Ссылка на видео ВКонтакте"><button id="loadVideoButton">Загрузить</button></div></section>
         <div id="videoShell"><video id="player" controls playsinline preload="auto"></video></div>
         <div id="viewerActions" class="viewer-actions hidden"><button id="goLiveButton" class="secondary">🔄 В прямой эфир</button></div>
-        <div id="roomStatus" class="status" role="status">Подключаемся к комнате...</div>
-        <details><summary>Отладочный лог</summary><pre id="debugLog" aria-live="polite">Лог пуст.</pre></details>
     </main>
 
     <script>
         const tg = window.Telegram?.WebApp;
         tg?.expand?.();
         const $ = id => document.getElementById(id);
+        function setRoomStatus(text) {
+            const element = $('roomStatus');
+            if (element) element.textContent = text;
+        }
+        function setLobbyStatus(text) {
+            const element = $('lobbyStatus');
+            if (element) element.textContent = text;
+        }
         const HOST_TOKEN_PREFIX = 'vk-watch:host:';
         const ROOM_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
         const initialRoom = String(new URLSearchParams(location.search).get('room') || tg?.initDataUnsafe?.start_param || '').trim().toUpperCase();
@@ -75,6 +78,7 @@
 
         function logDebug(message, details) {
             const log = $('debugLog');
+            if (!log) return;
             const extra = details === undefined ? '' : `\n${JSON.stringify(details, null, 2)}`;
             const prefix = log.textContent === 'Лог пуст.' ? '' : `${log.textContent}\n\n`;
             log.textContent = `${prefix}[${new Date().toLocaleTimeString()}] ${message}${extra}`;
@@ -124,16 +128,16 @@
         function updateRoomStatus(state, serverTime) {
             if (!state?.stream_url) return;
             if (!isOperator && localViewerPaused) {
-                $('roomStatus').textContent = `⏸ Локальная пауза • ${formatStreamTime($('player').currentTime)}`;
+                setRoomStatus(`⏸ Локальная пауза • ${formatStreamTime($('player').currentTime)}`);
                 return;
             }
             let actualTime = Number(state.actual_time ?? state.time);
             if (state.playing && Number.isFinite(Number(serverTime))) {
                 actualTime += Math.max(0, Date.now() / 1000 - Number(serverTime));
             }
-            $('roomStatus').textContent = state.playing
+            setRoomStatus(state.playing
                 ? `▶ Воспроизведение • ${formatStreamTime(actualTime)}`
-                : `⏸ На паузе • ${formatStreamTime(actualTime)}`;
+                : `⏸ На паузе • ${formatStreamTime(actualTime)}`);
         }
 
         function syncToStream(state, serverTime) {
@@ -163,15 +167,15 @@
                 return;
             }
 
-            if (Math.abs(player.currentTime - targetTime) > 1.2) {
+            if (Math.abs(player.currentTime - targetTime) > 2.5) {
                 isRemote = true;
                 player.currentTime = targetTime;
                 setTimeout(() => { isRemote = false; }, 350);
                 player.playbackRate = 1;
             } else {
                 const drift = targetTime - player.currentTime;
-                if (drift > 0.25) player.playbackRate = 1.08;
-                else if (drift < -0.25) player.playbackRate = 0.92;
+                if (drift > 0.35) player.playbackRate = 1.06;
+                else if (drift < -0.35) player.playbackRate = 0.94;
                 else player.playbackRate = 1;
             }
             if (player.paused) {
@@ -191,13 +195,13 @@
             ws.onmessage = handleRoomMessage;
             ws.onopen = () => {
                 ws.send(JSON.stringify({ type: 'auth', host_token: hostToken, nickname: userNickname }));
-                $('roomStatus').textContent = 'Подключаемся к комнате...';
+                setRoomStatus('Подключаемся к комнате...');
                 setTimeout(() => {
                     if (ws?.readyState === WebSocket.OPEN) requestSync();
                 }, 200);
             };
-            ws.onclose = () => { if (roomId) $('roomStatus').textContent = 'Соединение потеряно.'; };
-            ws.onerror = () => { if (roomId) $('roomStatus').textContent = 'Не удалось подключиться к комнате.'; };
+            ws.onclose = () => { if (roomId) setRoomStatus('Соединение потеряно.'); };
+            ws.onerror = () => { if (roomId) setRoomStatus('Не удалось подключиться к комнате.'); };
         }
 
         function enterRoom(code, token = null) {
@@ -226,7 +230,7 @@
         });
         $('joinRoomButton').addEventListener('click', () => {
             const code = normalizeRoomCode($('roomCodeInput').value);
-            if (!code) { $('lobbyStatus').textContent = 'Введите код комнаты или пригласительную ссылку.'; return; }
+            if (!code) { setLobbyStatus('Введите код комнаты или пригласительную ссылку.'); return; }
             enterRoom(code);
         });
         $('roomCodeInput').addEventListener('keydown', event => { if (event.key === 'Enter') $('joinRoomButton').click(); });
@@ -235,7 +239,7 @@
             const url = new URL(location.href);
             url.search = '';
             url.searchParams.set('room', roomId);
-            try { await navigator.clipboard.writeText(url.toString()); $('roomStatus').textContent = 'Ссылка-приглашение скопирована.'; }
+            try { await navigator.clipboard.writeText(url.toString()); setRoomStatus('Ссылка-приглашение скопирована.'); }
             catch (_) { window.prompt('Скопируйте ссылку на комнату:', url.toString()); }
         }
         $('inviteButton').addEventListener('click', inviteFriends);
@@ -255,7 +259,7 @@
             roomId = null; hostToken = null; isOperator = false;
             const url = new URL(location.href); url.search = ''; history.replaceState({}, '', url);
             $('screenRoom').classList.add('hidden'); $('screenLobby').classList.remove('hidden');
-            $('lobbyStatus').textContent = '';
+            setLobbyStatus('');
         });
 
         function setVideoSource(streamUrl, targetTime = 0, shouldPlay = true, isHls = false, headers = {}, initialSnapshot = null) {
@@ -271,7 +275,15 @@
             logDebug(`Выбран плеер: ${useHls ? 'Hls.js' : 'нативный <video>'}`, { targetTime: startPosition, streamUrl });
 
             if (useHls) {
-                hls = new Hls({ startPosition, maxBufferLength: 60, maxMaxBufferLength: 120 });
+                hls = new Hls({
+                    startPosition,
+                    maxBufferLength: 90,
+                    maxMaxBufferLength: 180,
+                    maxBufferSize: 80 * 1000 * 1000,
+                    backBufferLength: 30,
+                    nudgeOffset: 0.1,
+                    nudgeMaxRetry: 3,
+                });
                 hls.loadSource(proxyUrl); hls.attachMedia(player);
                 hls.on(Hls.Events.MANIFEST_PARSED, () => {
                     player.currentTime = startPosition;
@@ -290,7 +302,7 @@
                 });
                 hls.on(Hls.Events.ERROR, (event, data) => {
                     logDebug('Ошибка Hls.js', { type: data.type, details: data.details, fatal: data.fatal });
-                    if (data.fatal) $('roomStatus').textContent = 'Ошибка воспроизведения HLS.';
+                    if (data.fatal) setRoomStatus('Ошибка воспроизведения HLS.');
                 });
             } else {
                 player.src = proxyUrl;
@@ -319,7 +331,7 @@
                     $('roleBadge').textContent = isOperator ? `👑 ${msg.nickname || userNickname || 'Оператор'}` : `👀 ${msg.nickname || userNickname || 'Зритель'}`;
                     $('operatorPanel').classList.toggle('hidden', !isOperator);
                     $('viewerActions').classList.toggle('hidden', isOperator);
-                    $('roomStatus').textContent = `Комната подключена как ${isOperator ? 'Оператор' : 'Зритель'}.`;
+                    setRoomStatus(`Комната подключена как ${isOperator ? 'Оператор' : 'Зритель'}.`);
                 }
                 if (Array.isArray(msg.participants)) {
                     $('participantsLabel').textContent = `Участники: ${msg.participants.length} (${msg.participants.join(', ')})`;
@@ -340,7 +352,7 @@
                         syncToStream(state, msg.server_time);
                     }
                 } else if (isOperator && msg.role) {
-                    $('roomStatus').textContent = 'Комната готова. Загрузите видео.';
+                    setRoomStatus('Комната готова. Загрузите видео.');
                 }
                 return;
             }
@@ -350,7 +362,7 @@
             if (!isOperator) return;
             const url = $('videoUrlInput').value.trim();
             if (!url) return;
-            const button = $('loadVideoButton'); button.disabled = true; $('roomStatus').textContent = 'Извлекаем видео...';
+            const button = $('loadVideoButton'); button.disabled = true; setRoomStatus('Извлекаем видео...');
             try {
                 const response = await fetch(`/api/extract?url=${encodeURIComponent(url)}`);
                 const data = await response.json();
@@ -360,8 +372,8 @@
                 // The sender is excluded from server broadcasts, so load it locally too.
                 setVideoSource(data.stream_url, 0, true, data.is_hls, data.http_headers || {});
                 ws.send(JSON.stringify({ type: 'load', vk_url: url, stream_url: data.stream_url, is_hls: data.is_hls, http_headers: data.http_headers, title: data.title }));
-                $('roomStatus').textContent = '▶ Видео загружено • воспроизведение запущено';
-            } catch (error) { $('roomStatus').textContent = `Ошибка: ${error.message}`; logDebug('Ошибка загрузки видео', error.message); }
+                setRoomStatus('▶ Видео загружено • воспроизведение запущено');
+            } catch (error) { setRoomStatus(`Ошибка: ${error.message}`); logDebug('Ошибка загрузки видео', error.message); }
             finally { button.disabled = false; }
         });
 
@@ -388,14 +400,22 @@
             if (isOperator && !isRemote && ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'pause', time: $('player').currentTime }));
             else if (!isOperator && !isRemote) {
                 localViewerPaused = true;
-                $('roomStatus').textContent = `⏸ Локальная пауза • ${formatStreamTime($('player').currentTime)}`;
+                setRoomStatus(`⏸ Локальная пауза • ${formatStreamTime($('player').currentTime)}`);
             }
         });
         $('player').addEventListener('waiting', () => {
-            if (!isOperator && latestStreamSnapshot?.state) syncToStream(latestStreamSnapshot.state, latestStreamSnapshot.server_time);
+            if (!isOperator && latestStreamSnapshot?.state && !localViewerPaused) {
+                setTimeout(() => {
+                    if ($('player').paused === false) syncToStream(latestStreamSnapshot.state, latestStreamSnapshot.server_time);
+                }, 1200);
+            }
         });
         $('player').addEventListener('stalled', () => {
-            if (!isOperator && latestStreamSnapshot?.state) syncToStream(latestStreamSnapshot.state, latestStreamSnapshot.server_time);
+            if (!isOperator && latestStreamSnapshot?.state && !localViewerPaused) {
+                setTimeout(() => {
+                    if ($('player').paused === false) syncToStream(latestStreamSnapshot.state, latestStreamSnapshot.server_time);
+                }, 1200);
+            }
         });
         $('goLiveButton').addEventListener('click', () => {
             localViewerPaused = false;
@@ -428,7 +448,7 @@
             if (ws && ws.readyState < WebSocket.CLOSING) ws.close(1000, 'Left room');
             ws = null; stopMedia(); roomId = null; hostToken = null; isOperator = false; localViewerPaused = false;
             const url = new URL(location.href); url.search = ''; history.replaceState({}, '', url);
-            $('screenRoom').classList.add('hidden'); $('screenLobby').classList.remove('hidden'); $('lobbyStatus').textContent = '';
+            $('screenRoom').classList.add('hidden'); $('screenLobby').classList.remove('hidden'); setLobbyStatus('');
         });
 
         $('inviteButton').addEventListener('click', inviteFriends);
