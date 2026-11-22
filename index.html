@@ -68,7 +68,7 @@
         const initialRoom = String(new URLSearchParams(location.search).get('room') || tg?.initDataUnsafe?.start_param || '').trim().toUpperCase();
 
         let roomId = null, hostToken = null, isOperator = false, userNickname = '', ws = null, hls = null;
-        let isRemote = false, isSeeking = false, currentProxyUrl = '';
+        let isRemote = false, isSeeking = false, localSeekUntil = 0, currentProxyUrl = '';
         let latestStreamSnapshot = null;
         const savedNickname = localStorage.getItem('vk-watch:nickname') || '';
         if ($('nicknameInput')) $('nicknameInput').value = savedNickname;
@@ -135,6 +135,7 @@
         function syncToStream(state, serverTime) {
             if (!state) return;
             const player = $('player');
+            if (isRemote || isSeeking || player.seeking) return;
             if (!player.currentSrc || player.readyState < HTMLMediaElement.HAVE_METADATA) {
                 if (state.playing === false) player.pause();
                 return;
@@ -357,17 +358,22 @@
             finally { button.disabled = false; }
         });
 
-        $('player').addEventListener('seeking', () => { isSeeking = true; });
+        $('player').addEventListener('seeking', () => {
+            isSeeking = true;
+            if (isOperator) localSeekUntil = Date.now() + 1500;
+        });
         $('player').addEventListener('seeked', () => {
-            setTimeout(() => { isSeeking = false; }, 120);
+            setTimeout(() => { isSeeking = false; }, 350);
             if (isOperator && !isRemote && ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'seek', time: $('player').currentTime }));
             else if (!isOperator && latestStreamSnapshot?.state) syncToStream(latestStreamSnapshot.state, latestStreamSnapshot.server_time);
         });
         $('player').addEventListener('play', () => {
+            if (isOperator && Date.now() < localSeekUntil) return;
             if (isOperator && !isRemote && ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'play', time: $('player').currentTime }));
             else if (!isOperator && !isRemote && latestStreamSnapshot?.state) syncToStream(latestStreamSnapshot.state, latestStreamSnapshot.server_time);
         });
         $('player').addEventListener('pause', () => {
+            if (isOperator && Date.now() < localSeekUntil) return;
             if (isOperator && !isRemote && ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'pause', time: $('player').currentTime }));
             else if (!isOperator && !isRemote && latestStreamSnapshot?.state?.playing) syncToStream(latestStreamSnapshot.state, latestStreamSnapshot.server_time);
         });
